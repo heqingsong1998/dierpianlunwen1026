@@ -1,0 +1,4 @@
+# Python 3.10; versions used for the GUI and controller regression tests.
+PyQt5==5.15.9
+pyserial==3.5
+PyYAML==6.0.2

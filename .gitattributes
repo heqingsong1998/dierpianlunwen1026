@@ -1,0 +1,13 @@
+# Keep source files as text; Windows Git may use CRLF in its working directory.
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.ps1 text eol=crlf
+*.a binary
+*.lib binary
+*.png binary
+*.jpg binary
+*.pdf binary

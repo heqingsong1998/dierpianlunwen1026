@@ -1,0 +1,4 @@
+force_channels = 2
+proximity_channels = 4
+sample_rate = 1000 Hz
+sensor_type = multimodal
