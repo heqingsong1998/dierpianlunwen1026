@@ -13,6 +13,7 @@ class ControlPanel(QWidget):
     nianfujiao_reply = pyqtSignal()
     nianfujiao_engage = pyqtSignal()
     nianfujiao_zero = pyqtSignal()
+    proximity_view_requested = pyqtSignal()
     
     # 六轴力 信号
     liuzhouli_zero = pyqtSignal()
@@ -36,22 +37,28 @@ class ControlPanel(QWidget):
 
         # 粘附脚控制组
         nianfujiao_group = QGroupBox("粘附脚传感器")
-        nianfujiao_layout = QHBoxLayout()
+        nianfujiao_layout = QVBoxLayout()
+        command_buttons = QHBoxLayout()
         
         self.nianfujiao_reply_btn = QPushButton("回复")
         self.nianfujiao_reply_btn.setToolTip("命令下位机拉低 PA4")
         self.nianfujiao_reply_btn.clicked.connect(self.nianfujiao_reply.emit)
-        nianfujiao_layout.addWidget(self.nianfujiao_reply_btn)
+        command_buttons.addWidget(self.nianfujiao_reply_btn)
         
         self.nianfujiao_engage_btn = QPushButton("吸合")
         self.nianfujiao_engage_btn.setToolTip("命令下位机拉高 PA4")
         self.nianfujiao_engage_btn.clicked.connect(self.nianfujiao_engage.emit)
-        nianfujiao_layout.addWidget(self.nianfujiao_engage_btn)
+        command_buttons.addWidget(self.nianfujiao_engage_btn)
         
         self.nianfujiao_zero_btn = QPushButton("清零")
         self.nianfujiao_zero_btn.setToolTip("更新下位机零点基准，保持 PA4 当前电平")
         self.nianfujiao_zero_btn.clicked.connect(self.nianfujiao_zero.emit)
-        nianfujiao_layout.addWidget(self.nianfujiao_zero_btn)
+        command_buttons.addWidget(self.nianfujiao_zero_btn)
+        nianfujiao_layout.addLayout(command_buttons)
+        self.proximity_view_btn = QPushButton('接近觉 2×2 三维图')
+        self.proximity_view_btn.setToolTip('打开四路接近觉实时柱状图，辅助调整黏附脚姿态')
+        self.proximity_view_btn.clicked.connect(self.proximity_view_requested.emit)
+        nianfujiao_layout.addWidget(self.proximity_view_btn)
         
         nianfujiao_group.setLayout(nianfujiao_layout)
         layout.addWidget(nianfujiao_group)
@@ -99,7 +106,7 @@ class ControlPanel(QWidget):
             lambda: self.controller_apply.emit(self.controller_settings()))
         parameter_buttons.addWidget(self.controller_apply_btn)
         self.controller_reload_btn = QPushButton('重载标定')
-        self.controller_reload_btn.setToolTip('读取 controller/calibration.json，停止控制器，等待重新布防')
+        self.controller_reload_btn.setToolTip('读取 controller/config/calibration.json，停止控制器，等待重新布防')
         self.controller_reload_btn.clicked.connect(self.controller_reload_calibration.emit)
         parameter_buttons.addWidget(self.controller_reload_btn)
         controller_layout.addLayout(parameter_buttons)

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 
-SETTINGS_PATH = Path(__file__).with_name('settings.json')
+SETTINGS_PATH = Path(__file__).resolve().parents[1] / 'config' / 'settings.json'
 
 
 @dataclass(frozen=True)

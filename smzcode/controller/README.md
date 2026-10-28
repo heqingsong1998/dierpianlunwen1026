@@ -8,8 +8,8 @@
 下位机 AD7142 采样、清零、组合信号
   → 真实 0x123 新帧
   → 控制器有界队列（记录 B）
-  → signal_processing.py：二次多项式标定
-  → threshold.py：Fz1 ≥ 阈值1 且 Fz2 ≥ 阈值2
+  → algorithms/signal_processing.py：二次多项式标定
+  → algorithms/threshold.py：Fz1 ≥ 阈值1 且 Fz2 ≥ 阈值2
   → 提交绑定原始样本编号的命令（驱动记录 C）
   → 下位机执行 GPIO 并返回 0x125
 ```
@@ -33,16 +33,47 @@ Fz1 为第一组 `Fz1_plus + FZ1_minus` 的标定值，Fz2 同理，采用原有
 
 ## 文件与参数
 
+控制器主文件 `worker.py` 保留在外层，其余按算法、配置、显示和说明分类：
+
+```text
+controller/
+├── worker.py                     # 控制器主文件
+├── __init__.py
+├── README.md
+├── algorithms/                   # 信号处理与决策算法
+│   ├── __init__.py
+│   ├── signal_processing.py
+│   ├── calibration.py
+│   └── threshold.py
+├── config/                       # 实验参数
+│   ├── calibration.json
+│   ├── settings.json
+│   └── proximity_layout.json
+├── visualization/                # 接近觉显示
+│   ├── __init__.py
+│   ├── proximity_data.py
+│   └── proximity_view.py
+└── docs/
+    └── proximity_view.md
+```
+
 | 文件 | 用途 |
 | --- | --- |
 | `worker.py` | 独立线程、队列、状态、命令关联和回执处理 |
-| `signal_processing.py` | 信号处理入口；后续滤波、融合等算法在此扩展 |
-| `calibration.py` | 二次多项式计算及正负分支 |
-| `calibration.json` | 原上位机的标定系数、比例因子、模型编号 |
-| `threshold.py` | 双阈值 AND 判据及参数读写 |
-| `settings.json` | 界面保存的两组阈值和触发电平，重启后继续读取 |
+| `algorithms/signal_processing.py` | 信号处理入口；后续滤波、融合等算法在此扩展 |
+| `algorithms/calibration.py` | 二次多项式计算及正负分支 |
+| `config/calibration.json` | 原上位机的标定系数、比例因子、模型编号 |
+| `algorithms/threshold.py` | 双阈值 AND 判据及参数读写 |
+| `config/settings.json` | 界面保存的两组阈值和触发电平，重启后继续读取 |
+| `visualization/proximity_data.py` | 四路接近觉数据提取、四角位置及信号差计算 |
+| `visualization/proximity_view.py` | 独立的接近觉 2×2 三维柱状图窗口 |
+| `config/proximity_layout.json` | 接近觉俯视图的四角通道位置配置 |
 
-修改标定只需编辑 `calibration.json`，点击“重载标定”，然后重新布防；无需烧录单片机。模型加载成功后，主界面显示和同步记录也使用这份参数。当前未增加 GUI 拟合或系数表格编辑器。无效标定文件不会替换当前模型。模型文件采用 `a*x*x + b*x + c`；力单位转换为 `/1000 * gravity * force_scale`，力矩为 `/1000 * gravity / moment_divisor`。更换参数后建议更新 `model_id`。
+主界面“粘附脚传感器”下的“接近觉 2×2 三维图”按钮可打开实时显示，用于手动调整姿态。显示操作与控制器启停、数据采集独立，使用方法及信号含义见 [接近觉显示说明](docs/proximity_view.md)。
+
+修改标定只需编辑 `config/calibration.json`，点击“重载标定”，然后重新布防；无需烧录单片机。模型加载成功后，主界面显示和同步记录也使用这份参数。当前未增加 GUI 拟合或系数表格编辑器。无效标定文件不会替换当前模型。模型文件采用 `a*x*x + b*x + c`；力单位转换为 `/1000 * gravity * force_scale`，力矩为 `/1000 * gravity / moment_divisor`。更换参数后建议更新 `model_id`。
+
+三个配置文件统一保存在 `config/`，加载路径相对于模块文件定位，不依赖启动时的工作目录。保存阈值和保存显示位置也会写回该目录。
 
 输入队列最多 8 帧，过载时丢最旧待处理帧并计数；超过 500 ms 的旧输入不会发送命令。串口发送失败、下位机拒绝命令或触发命令 1 秒无回执会停止控制器，在界面显示原因。启动要求最近 500 ms 收到过版本 1 的 0x124 帧。Windows/Python 的线程调度不提供硬实时保证，应使用实验记录评估实际时延。
 

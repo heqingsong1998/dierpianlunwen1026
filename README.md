@@ -69,8 +69,8 @@ cd smzcode
 
 默认两组阈值均为 1.5 N，同时达到阈值时触发一次。界面可修改阈值、触发 PA4 电平，启停控制器或重新布防。参数和标定文件会随 Git 版本同步：
 
-- `smzcode/controller/settings.json`：界面保存的阈值和触发电平。
-- `smzcode/controller/calibration.json`：已有的多项式标定参数，修改后可在界面重载。
+- `smzcode/controller/config/settings.json`：界面保存的阈值和触发电平。
+- `smzcode/controller/config/calibration.json`：已有的多项式标定参数，修改后可在界面重载。
 
 程序中修改这些参数后，必须提交并推送相应文件，另一台电脑才能通过 `git pull` 获得新参数。实验原始数据默认保存在运行目录下的 `data/sessions/`，该目录不会随源码上传，需要另行保存实验记录。
 

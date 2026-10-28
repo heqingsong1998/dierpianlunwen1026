@@ -16,8 +16,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from controller.calibration import Calibration, RAW_FIELDS, CALIBRATED_FIELDS
-from controller.threshold import ThresholdSettings, threshold_reached
+from controller.algorithms.calibration import Calibration, RAW_FIELDS, CALIBRATED_FIELDS
+from controller.algorithms.threshold import ThresholdSettings, threshold_reached
 from controller.worker import FootController
 from drivers.nianfujiao_song.protocol import PendingCommand, GPIO_WRITTEN, TIMING_VALID, GPIO_CHANGED
 from test_nianfujiao_protocol import device, feed, wire, channels, pairs

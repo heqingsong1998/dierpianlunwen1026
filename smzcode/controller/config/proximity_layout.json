@@ -1,0 +1,5 @@
+{
+  "view": "top",
+  "position_order": ["upper_left", "upper_right", "lower_left", "lower_right"],
+  "positions": ["JJJ1_1", "JJJ2_1", "JJJ1_2", "JJJ2_2"]
+}

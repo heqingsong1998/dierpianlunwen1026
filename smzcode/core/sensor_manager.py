@@ -22,7 +22,7 @@ print(f"[VERIFY] 两个类是否相同? {JY901SDevice1 is JY901SDevice2}")
 
 from drivers.nianfujiao_song import NianFuJiaoDevice
 from drivers.sensors.utils import create_sensor, initialize_sensor
-from controller.calibration import raw_from_sample
+from controller.algorithms.calibration import raw_from_sample
 from controller.worker import FootController
 
 

@@ -13,7 +13,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from controller.calibration import Calibration
+from controller.algorithms.calibration import Calibration
 from core.data_recorder import DataRecorder
 from core.sensor_manager import SensorManager
 from test_nianfujiao_protocol import channels, device, feed, pairs, wire

@@ -2,3 +2,4 @@
 PyQt5==5.15.9
 pyserial==3.5
 PyYAML==6.0.2
+matplotlib==3.10.7

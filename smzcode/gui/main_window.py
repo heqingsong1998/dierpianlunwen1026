@@ -23,7 +23,7 @@ from gui.panels.recording_panel import RecordingPanel
 from core.sensor_manager import SensorManager
 from core.data_recorder import DataRecorder
 from gui.widgets.log_widget import LogWidget
-from controller.threshold import ThresholdSettings
+from controller.algorithms.threshold import ThresholdSettings
 from dataclasses import asdict
 
 
@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
         
         self.config_path = config_path
         self._liuzhouli_zero_busy = False
+        self._proximity_dialog = None
         
         # 创建核心组件
         self.sensor_manager = SensorManager(config_path)
@@ -172,6 +173,7 @@ class MainWindow(QMainWindow):
         self.control_panel.controller_start.connect(self._on_controller_start)
         self.control_panel.controller_stop.connect(self._on_controller_stop)
         self.control_panel.controller_reload_calibration.connect(self._on_controller_reload)
+        self.control_panel.proximity_view_requested.connect(self._on_show_proximity)
         self.sensor_manager.controller_updated.connect(self.control_panel.update_controller_status)
         
         # 六轴力
@@ -196,6 +198,30 @@ class MainWindow(QMainWindow):
         self.recording_panel.open_folder.connect(self._on_open_folder)
     
     # ==================== 连接管理槽函数 ====================
+
+    def _on_show_proximity(self):
+        """按需打开只读显示窗口；重复点击复用窗口，不占用真实采集回调。"""
+        if self._proximity_dialog is None:
+            try:
+                from controller.visualization.proximity_view import ProximityViewDialog
+                self._proximity_dialog = ProximityViewDialog(self)
+            except ImportError as exc:
+                QMessageBox.warning(self, '接近觉显示依赖未安装',
+                                    f'{exc}\n请在当前 Python 环境安装绘图库：\n'
+                                    f'& "{sys.executable}" -m pip install matplotlib==3.10.7')
+                return
+            except Exception as exc:
+                print(f'[ERROR] 接近觉窗口创建失败: {exc}')
+                QMessageBox.warning(self, '接近觉显示', f'窗口创建失败：{exc}')
+                return
+        connected = self.sensor_manager.connection_status.get('nianfujiao', False)
+        self._proximity_dialog.set_connected(connected)
+        latest = self.sensor_manager.latest_data['nianfujiao'].get(0)
+        if connected and latest is not None:
+            self._proximity_dialog.update_sample(latest)
+        self._proximity_dialog.show()
+        self._proximity_dialog.raise_()
+        self._proximity_dialog.activateWindow()
 
     def _on_controller_apply(self, values):
         try:
@@ -315,6 +341,8 @@ class MainWindow(QMainWindow):
             self.sensor_manager.get_all_status()
         )
         self._update_liuzhouli_zero_button()
+        if sensor_id == 'nianfujiao' and self._proximity_dialog is not None:
+            self._proximity_dialog.set_connected(connected)
     
     def _on_sensor_error(self, sensor_id: str, error_msg: str):
         """传感器错误"""
@@ -401,6 +429,8 @@ class MainWindow(QMainWindow):
     def _on_nianfujiao_data_updated(self, style: int, data: dict):
         """粘附脚数据更新"""
         self.data_display_panel.update_nianfujiao_data(style, data)
+        if style == 0 and self._proximity_dialog is not None:
+            self._proximity_dialog.update_sample(data)
         
     
     def _on_liuzhouli_data_updated(self, data: dict):
@@ -514,6 +544,8 @@ class MainWindow(QMainWindow):
             # 停止采集
             self.data_recorder.stop_recording()
         
+        if self._proximity_dialog is not None:
+            self._proximity_dialog.close()
         # 断开所有传感器
         self.sensor_manager.disconnect_all()
         

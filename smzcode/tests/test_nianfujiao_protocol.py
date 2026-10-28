@@ -253,7 +253,8 @@ class IntegrationTests(unittest.TestCase):
 
     def test_gui_refresh_never_writes_duplicate_rows(self):
         from gui.main_window import MainWindow
-        window = SimpleNamespace(data_display_panel=Mock(), data_recorder=Mock(is_recording=True))
+        window = SimpleNamespace(data_display_panel=Mock(), data_recorder=Mock(is_recording=True),
+                                 _proximity_dialog=None)
         MainWindow._on_nianfujiao_data_updated(window, 0, {'raw': []})
         MainWindow._on_liuzhouli_data_updated(window, {'Fx': 1})
         window.data_recorder.write_nianfujiao_data.assert_not_called()

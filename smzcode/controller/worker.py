@@ -10,9 +10,9 @@ import queue
 import threading
 import time
 
-from .calibration import Calibration
-from .signal_processing import process_signal
-from .threshold import ThresholdSettings, threshold_reached
+from .algorithms.calibration import Calibration
+from .algorithms.signal_processing import process_signal
+from .algorithms.threshold import ThresholdSettings, threshold_reached
 
 
 class FootController:

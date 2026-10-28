@@ -45,7 +45,7 @@
 | 30 | `baseline_generation` | 本样本的清零基准版本，未知时留空，0 也是有效版本 |
 | 31 | `pin_state` | MCU 软件记录的 PA4 电平，0/1，不代表电磁铁机械动作完成 |
 
-原始信号来自下位机清零后的 CDC 数字量及其组合，不是绝对电容 pF 或已经标定的力。标定仍使用 `controller/calibration.json`；Mx/My 结果沿用原有换算系数。
+原始信号来自下位机清零后的 CDC 数字量及其组合，不是绝对电容 pF 或已经标定的力。标定使用 `controller/config/calibration.json`；Mx/My 结果沿用原有换算系数。
 
 ## 精简的字段
 

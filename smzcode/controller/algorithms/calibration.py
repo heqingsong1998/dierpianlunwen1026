@@ -1,4 +1,4 @@
-"""原有二次多项式标定。参数集中保存在同目录 calibration.json。"""
+"""原有二次多项式标定。参数位于 controller/config/calibration.json。"""
 import copy
 import json
 import math
@@ -11,6 +11,7 @@ RAW_FIELDS = (
     'reserved_1', 'reserved_2', 'reserved_3', 'reserved_4', 'reserved_5',
 )
 CALIBRATED_FIELDS = RAW_FIELDS[:5] + RAW_FIELDS[7:12] + RAW_FIELDS[14:16]
+CALIBRATION_PATH = Path(__file__).resolve().parents[1] / 'config' / 'calibration.json'
 
 
 def raw_from_sample(sample):
@@ -19,7 +20,7 @@ def raw_from_sample(sample):
 
 class Calibration:
     def __init__(self, path=None):
-        path = Path(path) if path else Path(__file__).with_name('calibration.json')
+        path = Path(path) if path else CALIBRATION_PATH
         with path.open(encoding='utf-8') as handle:
             self._config = json.load(handle)
         cfg = self._config
