@@ -211,7 +211,7 @@ class IntegrationTests(unittest.TestCase):
         from PyQt5.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_all_protocol_data_reaches_csv_and_original_columns_remain(self):
+    def test_all_protocol_data_reaches_csv_with_compact_foot_schema(self):
         with tempfile.TemporaryDirectory() as temp:
             recorder = DataRecorder(temp)
             manager = SensorManager(str(ROOT / 'config' / 'default.yaml'))
@@ -242,6 +242,11 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(int(rows[0]['ready_us']), 0xFFFFFF80)
                 self.assertEqual(int(rows[0]['Fx1_raw']), -12)
                 self.assertTrue(rows[0]['host_received_ns'])
+                self.assertEqual(len(rows[0]), 31)
+                self.assertEqual(rows[0]['baseline_generation'], '3')
+                self.assertEqual(rows[0]['JJJ2_1_raw'], '10')
+                self.assertIn('Fz1_cal', rows[0])
+                self.assertNotIn('Fz1+_cal', rows[0])
             for kind in ('stage_pairs', 'commands', 'feedback'):
                 with (path / f'nianfujiao_{kind}.csv').open(encoding='utf-8', newline='') as handle:
                     self.assertEqual(len(list(csv.DictReader(handle))), 1)

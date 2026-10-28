@@ -48,7 +48,11 @@ Fz1 为第一组 `Fz1_plus + FZ1_minus` 的标定值，Fz2 同理，采用原有
 
 ## 实验记录与时延
 
-原有 `nianfujiao_style0.csv` 与 `liuzhouli.csv` 同步记录保留，另有：
+原有 `nianfujiao_style0.csv` 与 `liuzhouli.csv` 同步记录保留。
+
+足端同步表和 `nianfujiao_frames.csv` 目前统一为 31 列：保留两组 Fx/Fy/Fz/Mx/My 的原始及标定值、四个 JJJ 原始通道，以及时间、样本编号、基准版本和 PA4 状态。最终法向力列统一命名为 `Fz1_cal/Fz2_cal`，正负分支仍在内部计算。字段明细与保存端基准版本匹配见 [数据记录说明](../docs/data_recording.md)。
+
+其余主要实验记录：
 
 - `controller_config.json`：开始记录时实际采用的阈值、全部标定参数及控制状态。
 - `nianfujiao_controller.csv`：启停、参数变化、触发确认，以及每个判定的 Fz1/Fz2、阈值、输入样本、命令 ID、B/C 和处理时延。中途参数更改也记录 JSON 事件，可还原参数历史。
