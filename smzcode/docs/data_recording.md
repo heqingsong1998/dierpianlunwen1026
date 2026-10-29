@@ -20,15 +20,15 @@
 | 5 | `Fz1_raw` | 第一组完整有符号法向组合信号，原名 Fz1+_raw |
 | 6 | `Mx1_raw` | 第一组 Mx 组合信号 |
 | 7 | `My1_raw` | 第一组 My 组合信号 |
-| 8 | `JJJ1_1_raw` | 第一组清零后的 Stage 9 |
-| 9 | `JJJ1_2_raw` | 第一组清零后的 Stage 4 |
+| 8 | `JJJ1_1_raw` | 第一组 CIN9，清零后的 Stage 7 |
+| 9 | `JJJ1_2_raw` | 第一组 CIN4，清零后的 Stage 4 |
 | 10 | `Fx2_raw` | 第二组 Fx 组合信号 |
 | 11 | `Fy2_raw` | 第二组 Fy 组合信号 |
 | 12 | `Fz2_raw` | 第二组完整有符号法向组合信号，原名 Fz2+_raw |
 | 13 | `Mx2_raw` | 第二组 Mx 组合信号 |
 | 14 | `My2_raw` | 第二组 My 组合信号 |
-| 15 | `JJJ2_1_raw` | 第二组清零后的 Stage 9，原名 flag1_raw |
-| 16 | `JJJ2_2_raw` | 第二组清零后的 Stage 4，原名 flag2_raw |
+| 15 | `JJJ2_1_raw` | 第二组 CIN9，清零后的 Stage 7，原名 flag1_raw |
+| 16 | `JJJ2_2_raw` | 第二组 CIN4，清零后的 Stage 4，原名 flag2_raw |
 | 17 | `Fx1_cal` | 第一组 Fx 标定结果 |
 | 18 | `Fy1_cal` | 第一组 Fy 标定结果 |
 | 19 | `Fz1_cal` | 第一组最终 Fz，原 Fz1_total_cal，合并正负标定分支 |
@@ -46,6 +46,8 @@
 | 31 | `pin_state` | MCU 软件记录的 PA4 电平，0/1，不代表电磁铁机械动作完成 |
 
 原始信号来自下位机清零后的 CDC 数字量及其组合，不是绝对电容 pF 或已经标定的力。标定使用 `controller/config/calibration.json`；Mx/My 结果沿用原有换算系数。
+
+接近觉映射对应修正后的 10 Stage 固件。修正前的主版本曾把 `JJJ1_1_raw/JJJ2_1_raw` 取为 Stage9（CIN11）；历史文件需结合当时固件解释，改列名不能纠正已采集的通道。
 
 ## 精简的字段
 

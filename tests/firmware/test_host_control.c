@@ -126,7 +126,8 @@ static void TestAcquisitionAndWireCompatibility(void)
     assert(gpio_writes == 0); /* Large forces cannot autonomously change PA4. */
     assert(sample.legacy_values[0] == -20 && sample.legacy_values[1] == 20);
     assert(sample.legacy_values[2] == 8340 && sample.legacy_values[9] == 8348);
-    assert(sample.legacy_values[12] == 1091 && sample.legacy_values[13] == 1041);
+    assert(sample.legacy_values[5] == 1070 && sample.legacy_values[6] == 1040);
+    assert(sample.legacy_values[12] == 1071 && sample.legacy_values[13] == 1041);
     assert(sample.legacy_values[14] == 8340 && sample.legacy_values[15] == 8348);
     SendSample(&sample); assert(tx_count == 2 && tx_frames[0].id == 0x123 && tx_frames[1].id == 0x124);
     assert(HostProtocol_GetU16(&tx_frames[0].data[0]) == (uint16_t)-20);
@@ -135,6 +136,40 @@ static void TestAcquisitionAndWireCompatibility(void)
     assert(HostProtocol_GetU32(&tx_frames[0].data[44]) == 100000);
     assert(HostProtocol_GetU16(&tx_frames[1].data[0]) == 2010);
     assert(HostProtocol_GetU32(&tx_frames[1].data[16]) == 1);
+}
+static void TestProximityChannelsStayIndependentFromForceCin11(void)
+{
+    ResetFixture();
+    /* Current 10-stage wiring: CIN9 = Stage7, CIN4 = Stage4, CIN11 = Stage9.
+       Use distinct baselines and signs so a Stage9/Stage7 mix-up cannot pass. */
+    adc_values[0][7] = 2100; offset1[7] = 2000; /* JJJ1_1 = +100. */
+    adc_values[0][4] = 1700; offset1[4] = 1800; /* JJJ1_2 = -100. */
+    adc_values[0][9] = 3500; offset1[9] = 2000;
+    adc_values[1][7] = 2300; offset2[7] = 2600; /* JJJ2_1 = -300. */
+    adc_values[1][4] = 2200; offset2[4] = 1800; /* JJJ2_2 = +400. */
+    adc_values[1][9] = 3900; offset2[9] = 2000;
+    CalclptData before = Acquire(1, 100000);
+    assert(before.legacy_values[5] == 100 && before.legacy_values[6] == -100);
+    assert(before.legacy_values[12] == -300 && before.legacy_values[13] == 400);
+    SendSample(&before);
+    assert(tx_frames[0].id == 0x123);
+    assert(HostProtocol_GetU16(&tx_frames[0].data[10]) == (uint16_t)100);
+    assert(HostProtocol_GetU16(&tx_frames[0].data[12]) == (uint16_t)-100);
+    assert(HostProtocol_GetU16(&tx_frames[0].data[24]) == (uint16_t)-300);
+    assert(HostProtocol_GetU16(&tx_frames[0].data[26]) == (uint16_t)400);
+
+    /* Changing only the force CIN11 must not change any proximity field. */
+    adc_values[0][9] += 500;
+    adc_values[1][9] -= 200;
+    CalclptData after = Acquire(1, 116000);
+    const unsigned int proximity_indices[] = {5, 6, 12, 13};
+    for (unsigned int i = 0; i < 4; ++i) {
+        unsigned int index = proximity_indices[i];
+        assert(after.legacy_values[index] == before.legacy_values[index]);
+    }
+    assert(after.legacy_values[2] == before.legacy_values[2] + 500);
+    assert(after.legacy_values[9] == before.legacy_values[9] - 200);
+    assert(gpio_writes == 0);
 }
 static void TestTimedActionAndWrap(void)
 {
@@ -209,10 +244,11 @@ static void TestBusyTxIsBounded(void)
 int main(void)
 {
     TestAcquisitionAndWireCompatibility();
+    TestProximityChannelsStayIndependentFromForceCin11();
     TestTimedActionAndWrap();
     TestZeroAndRejectedReferences();
     TestDecodeAndRxFiltering();
     TestBusyTxIsBounded();
-    puts("PASS: acquisition compatibility, no autonomous output, timing/rollover, zero/hold, stale references, RX validation/overflow, bounded TX retries");
+    puts("PASS: acquisition compatibility, CIN9/CIN4 proximity mapping and isolation from CIN11, no autonomous output, timing/rollover, zero/hold, stale references, RX validation/overflow, bounded TX retries");
     return 0;
 }

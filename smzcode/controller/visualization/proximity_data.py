@@ -7,6 +7,8 @@ from pathlib import Path
 import tempfile
 
 CHANNELS = ('JJJ1_1', 'JJJ1_2', 'JJJ2_1', 'JJJ2_2')
+# 下位机 10 Stage 配置：JJJ*_1 = CIN9 / Stage7，JJJ*_2 = CIN4 / Stage4。
+# 以下是 0x123 内部 raw 数组的字段索引，并非 CIN 编号或 Stage 编号。
 RAW_INDICES = (5, 6, 12, 13)
 POSITION_NAMES = ('左上', '右上', '左下', '右下')
 # 用户确认的足端俯视位置：第一组在左列，第二组在右列。

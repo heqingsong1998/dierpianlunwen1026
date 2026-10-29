@@ -69,6 +69,17 @@ static SampleTiming sample_history[128];
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+/* 两片 AD7142 均使用 AD7142_init() 中的 10 Stage 配置：
+ * 第一路接近觉：CIN9 -> Stage7 -> JJJ1_1 / JJJ2_1（0x123 int16 索引 5 / 12）。
+ * 第二路接近觉：CIN4 -> Stage4 -> JJJ1_2 / JJJ2_2（0x123 int16 索引 6 / 13）。
+ * CIN 编号是输入通道号，不是芯片封装的物理脚号，也不等于 Stage 编号。
+ * Stage9 对应 CIN11，参与受力信号计算，不能当作 CIN9 的接近觉上传。
+ * 接近觉测试版的 5 Stage 配置把 CIN9 放在 Stage3；勿将该索引搬到本版本。
+ * 修改通道配置时，应同时核对 Drivers/AD7142/AD7142.c 的 AD7142_init()。
+ */
+#define AD7142_PROXIMITY_CIN9_STAGE 7U
+#define AD7142_PROXIMITY_CIN4_STAGE 4U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -209,8 +220,9 @@ void Task_Control(void *argument)
             out[2] = s[0] + s[1] + s[2] + s[3] + s[8] + s[9] + s[5] + s[6];
             out[3] = s[0] + s[1] + s[2] + s[3] - s[8] - s[9] - s[6] - s[5];
             out[4] = s[0] + s[1] + s[5] + s[6] - s[2] - s[3] - s[8] - s[9];
-            out[5] = s[9];
-            out[6] = s[4];
+            /* 接近觉分别上传各自清零后的单 Stage 读数，两片芯片共用此映射。 */
+            out[5] = s[AD7142_PROXIMITY_CIN9_STAGE]; /* CIN9，第一路接近觉。 */
+            out[6] = s[AD7142_PROXIMITY_CIN4_STAGE]; /* CIN4，第二路接近觉。 */
             pairs[0] = s[0] + s[1];
             pairs[1] = s[2] + s[3];
             pairs[2] = s[8] + s[9];
