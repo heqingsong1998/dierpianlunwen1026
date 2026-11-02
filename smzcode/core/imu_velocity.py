@@ -37,7 +37,7 @@ def body_to_world(angles):
 
 
 class ImuVelocityEstimator:
-    MODEL_ID = 'imu1_attitude_trapezoid_v1'
+    MODEL_ID = 'imu1_attitude_y_mm_s_v2'
 
     def __init__(self, settings=None):
         self.settings = settings or VelocitySettings()
@@ -71,7 +71,9 @@ class ImuVelocityEstimator:
                     'bias_body_mps2': self._bias.tolist(),
                     'reference_yaw_deg': self._yaw0,
                     'frame': 'local_level_initial_heading_z_up',
-                    'initial_velocity_mps': [0, 0, 0], 'automatic_zupt': False}
+                    'initial_velocity_y_mm_s': 0,
+                    'velocity_output': {'axis': 'Y', 'unit': 'mm/s', 'field': 'vel_y_mm_s'},
+                    'automatic_zupt': False}
 
     def update(self, sample):
         with self.lock:
@@ -153,8 +155,8 @@ class ImuVelocityEstimator:
                     velocity_run_id=self.run_id,
                     reference_yaw_deg=self._yaw0, gravity_mps2=self.settings.gravity)
         for i, axis in enumerate('xyz'):
-            data['vel_'+axis] = float(self._velocity[i]) if valid else None
             data['linear_acc_'+axis] = float(linear[i]) if linear is not None and valid else None
             data['bias_'+axis] = float(self._bias[i])
-        data['speed_mps'] = float(np.linalg.norm(self._velocity)) if valid else None
+        # 内部按 SI 单位积分，显示和保存只输出有正负号的 Y 轴速度（mm/s）。
+        data['vel_y_mm_s'] = float(self._velocity[1])*1000. if valid else None
         return data

@@ -49,7 +49,7 @@ PROTOCOL_COLUMNS = {
 IMU1_COLUMNS = [
     'timestamp_ms', 'host_received_ns', 'sample_sequence', 'chip_time_ms', 'frame_complete',
     'acc_x','acc_y','acc_z','gyro_x','gyro_y','gyro_z','angle_x','angle_y','angle_z','temperature',
-    'linear_acc_x','linear_acc_y','linear_acc_z','vel_x','vel_y','vel_z','speed_mps',
+    'linear_acc_x','linear_acc_y','linear_acc_z','vel_y_mm_s',
     'velocity_valid','velocity_status','velocity_generation','velocity_run_id','calibration_progress',
     'integration_dt_s','integration_time_source','integration_elapsed_s',
     'bias_x','bias_y','bias_z','reference_yaw_deg','gravity_mps2','velocity_model_id',

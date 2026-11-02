@@ -84,35 +84,19 @@ class HWT606DisplayWidget(QWidget):
         self.angle_z_label.setFont(font)
         grid.addWidget(self.angle_z_label, 3, 2)
         
-        #速度
-        vel_label = QLabel("<b>速度 (m/s):</b>")
-        grid.addWidget(vel_label, 0, 3)
-
-        self.vel_x_label = QLabel("X: 0.000")
-        self.vel_x_label.setFont(font)
-        grid.addWidget(self.vel_x_label, 1, 3)
-
-        self.vel_y_label = QLabel("Y: 0.000")
-        self.vel_y_label.setFont(font)
-        grid.addWidget(self.vel_y_label, 2, 3)
-
-        self.vel_z_label = QLabel("Z: 0.000")
-        self.vel_z_label.setFont(font)
-        grid.addWidget(self.vel_z_label, 3, 3)
-
-        self.speed_label = QLabel('合速度：-- m/s（-- mm/s）')
-        self.speed_label.setStyleSheet('font-size: 17px; font-weight: bold; color: #155e75;')
-        self.speed_label.setWordWrap(True)
+        self.y_velocity_label = QLabel('Y轴速度：-- mm/s')
+        self.y_velocity_label.setStyleSheet('font-size: 17px; font-weight: bold; color: #155e75;')
+        self.y_velocity_label.setWordWrap(True)
         self.status_label = QLabel('IMU1 未连接')
         self.status_label.setWordWrap(True)
         self.zero_button = QPushButton('已确认静止：标定并将速度归零（约2秒）')
         self.zero_button.setEnabled(False)
         self.zero_button.clicked.connect(self.zero_requested.emit)
-        self.frame_label = QLabel('速度坐标：标定时的初始航向 X、水平 Y、向上 Z；短时积分估计')
+        self.frame_label = QLabel('初始水平 Y 方向：正值沿 +Y，负值沿 −Y；短时积分估计')
         self.frame_label.setWordWrap(True)
 
         layout.addLayout(grid)
-        for widget in (self.speed_label,self.status_label,self.zero_button,self.frame_label):
+        for widget in (self.y_velocity_label,self.status_label,self.zero_button,self.frame_label):
             layout.addWidget(widget)
         self.setLayout(layout)
         
@@ -152,11 +136,9 @@ class HWT606DisplayWidget(QWidget):
 
         # 速度
         valid = data.get('velocity_valid', False)
-        for axis, label in zip('xyz', (self.vel_x_label,self.vel_y_label,self.vel_z_label)):
-            label.setText(axis.upper()+': '+(number('vel_'+axis,4) if valid else '--'))
-        speed = data.get('speed_mps')
-        self.speed_label.setText(f'合速度：{speed:.4f} m/s（{speed*1000:.1f} mm/s）'
-                                if valid and speed is not None else '合速度：-- m/s（-- mm/s）')
+        velocity = data.get('vel_y_mm_s')
+        self.y_velocity_label.setText(f'Y轴速度：{velocity:+.1f} mm/s'
+                                     if valid and velocity is not None else 'Y轴速度：-- mm/s')
         statuses = {'needs_zero':'请确认静止，然后点击标定／速度归零',
                     'calibrating':'正在采集静止样本', 'hold_still':'检测到运动或波动，请继续保持静止',
                     'tracking':'速度估计中', 'gap_requires_zero':'数据中断或缺帧：速度已失效，请静止后重新归零',
@@ -174,9 +156,7 @@ class HWT606DisplayWidget(QWidget):
         if connected:
             self.status_label.setText('IMU1 已连接，等待新帧；请静止后标定／归零')
         else:
-            for label, axis in zip((self.vel_x_label,self.vel_y_label,self.vel_z_label),'XYZ'):
-                label.setText(axis+': --')
-            self.speed_label.setText('合速度：-- m/s（-- mm/s）')
+            self.y_velocity_label.setText('Y轴速度：-- mm/s')
             self.status_label.setText('IMU1 未连接')
 
 

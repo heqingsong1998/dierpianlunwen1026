@@ -53,7 +53,7 @@ def wire_cycle(seq, acceleration=0., omit_gyro=False):
     minute, rest = divmod(rest, 60_000)
     second, ms = divmod(rest, 1000)
     cycle = packet(0x50, bytes([26,11,2,hour,minute,second])+struct.pack('<H',ms))
-    cycle += packet(0x51, struct.pack('<hhhh',round(acceleration/9.80665/16*32768),0,2048,2500))
+    cycle += packet(0x51, struct.pack('<hhhh',0,round(acceleration/9.80665/16*32768),2048,2500))
     if not omit_gyro:
         cycle += packet(0x52, struct.pack('<hhhh',0,0,0,0))
     return cycle+packet(0x53, struct.pack('<hhhh',0,0,0,1))
@@ -66,28 +66,28 @@ class VelocityAlgorithmTests(unittest.TestCase):
         estimator = calibrated(angles, bias)
         for seq in range(211, 411):
             result = estimator.update(sample(seq, angles=angles, bias=bias))
-        np.testing.assert_allclose([result['vel_'+axis] for axis in 'xyz'],0,atol=1e-12)
+        self.assertAlmostEqual(result['vel_y_mm_s'],0.,places=9)
         # 任意姿态下，按当前姿态旋转重力；不把重力投影积分成速度。
         for seq in range(411, 511):
             result = estimator.update(sample(seq, angles=(60,30,125), bias=bias))
-        self.assertLess(result['speed_mps'],1e-12)
+        self.assertAlmostEqual(result['vel_y_mm_s'],0.,places=9)
         np.testing.assert_allclose([result['bias_'+axis] for axis in 'xyz'],bias,atol=1e-12)
 
     def test_accelerate_then_coast_preserves_speed_and_uses_initial_heading(self):
         estimator = calibrated(angles=(0,0,90))
         for seq in range(211,311):
-            result = estimator.update(sample(seq,acceleration=(0,.1,0),angles=(0,0,90)))
+            result = estimator.update(sample(seq,acceleration=(-.1,0,0),angles=(0,0,90)))
         for seq in range(311, 511):
             result = estimator.update(sample(seq,angles=(0,0,90)))
-        self.assertAlmostEqual(result['vel_x'],.1,places=10)
-        self.assertAlmostEqual(result['vel_y'],0.,places=10)
-        self.assertAlmostEqual(result['speed_mps'],.1,places=10)
+        self.assertAlmostEqual(result['vel_y_mm_s'],100.,places=8)
+        for old_key in ('vel_x','vel_y','vel_z','speed_mps'):
+            self.assertNotIn(old_key,result)
         self.assertEqual(result['integration_time_source'],'chip')
 
     def test_needs_explicit_zero_and_moving_calibration_does_not_finish(self):
         estimator = ImuVelocityEstimator()
         result = estimator.update(sample(1))
-        self.assertFalse(result['velocity_valid']); self.assertIsNone(result['vel_x'])
+        self.assertFalse(result['velocity_valid']); self.assertIsNone(result['vel_y_mm_s'])
         estimator.request_zero()
         for seq in range(2,302):
             data = sample(seq); data['gyro_z'] = 8.
@@ -100,7 +100,7 @@ class VelocityAlgorithmTests(unittest.TestCase):
         self.assertIsNone(estimator.update(sample(210)))
         result = estimator.update(sample(212))
         self.assertEqual(result['velocity_status'],'gap_requires_zero')
-        self.assertIsNone(result['speed_mps'])
+        self.assertIsNone(result['vel_y_mm_s'])
         self.assertFalse(estimator.update(sample(213))['velocity_valid'])
         estimator.request_zero()
         for seq in range(214,425):
@@ -139,7 +139,7 @@ class ImuPipelineTests(unittest.TestCase):
         self.assertEqual([row['sample_sequence'] for row in snapshots],[1,2,3])
         self.assertEqual([row['chip_time_ms'] for row in snapshots],[10,20,30])
         self.assertEqual([row['frame_complete'] for row in snapshots],[True,True,False])
-        self.assertEqual(snapshots[0]['acc_x'],21/32768*16)
+        self.assertEqual(snapshots[0]['acc_y'],21/32768*16)
         self.assertIsNot(device.device.protocolResolver.TempBytes,
                          JY901SDevice(port='OTHER').device.protocolResolver.TempBytes)
 
@@ -161,25 +161,29 @@ class ImuPipelineTests(unittest.TestCase):
                 manager.zero_imu1_velocity()
                 # 模拟串口集中交付：接收时刻几乎相同，积分仍用芯片周期。
                 with patch('time.perf_counter_ns', return_value=10**12):
-                    for seq in range(1, 311):
-                        device.device.onDataReceived(wire_cycle(seq, .1 if seq >= 211 else 0.))
+                    for seq in range(1, 611):
+                        acceleration = .1 if 211 <= seq <= 310 else -.1 if seq >= 411 else 0.
+                        device.device.onDataReceived(wire_cycle(seq, acceleration))
                 latest = manager.latest_data['hwt606_1']
                 self.assertTrue(latest['velocity_valid'])
-                self.assertAlmostEqual(latest['vel_x'],.1,delta=.005)
+                self.assertAlmostEqual(latest['vel_y_mm_s'],-100.,delta=5.)
                 for _ in range(10):
                     manager._update_display()
-                self.assertIn('--',window.data_display_panel.hwt606_1_widget.vel_x_label.text())
+                self.assertIn('--',window.data_display_panel.hwt606_1_widget.y_velocity_label.text())
                 window.data_recorder.stop_recording()
                 with (path/'hwt606_1.csv').open(encoding='utf8') as handle:
                     reader = csv.DictReader(handle); rows = list(reader)
                     self.assertEqual(reader.fieldnames,['timestamp',*IMU1_COLUMNS])
-                self.assertEqual(len(rows),310)
-                self.assertEqual(rows[0]['vel_x'],'')
+                    self.assertTrue({'vel_x','vel_y','vel_z','speed_mps'}.isdisjoint(reader.fieldnames))
+                self.assertEqual(len(rows),610)
+                self.assertEqual(rows[0]['vel_y_mm_s'],'')
                 self.assertEqual(rows[0]['velocity_valid'],'False')
                 self.assertEqual(rows[-1]['velocity_valid'],'True')
-                self.assertAlmostEqual(float(rows[-1]['vel_x']),latest['vel_x'])
+                self.assertAlmostEqual(float(rows[310]['vel_y_mm_s']),100.,delta=5.)
+                self.assertAlmostEqual(float(rows[-1]['vel_y_mm_s']),latest['vel_y_mm_s'])
                 self.assertEqual(json.loads((path/'imu1_velocity_config.json').read_text(encoding='utf8'))
-                                 ['estimator']['initial_velocity_mps'],[0,0,0])
+                                 ['estimator']['velocity_output'],
+                                 {'axis':'Y','unit':'mm/s','field':'vel_y_mm_s'})
                 first_path = path
                 self.assertTrue(window.data_recorder.start_recording())
                 window.data_recorder.stop_recording()
@@ -226,6 +230,18 @@ class ImuPipelineTests(unittest.TestCase):
         finally:
             manager.display_timer.stop(); manager.controller.stop()
             window.log_widget.stop_capture(); window.deleteLater(); self.app.processEvents()
+
+    def test_y_velocity_display_keeps_sign_and_mm_s_and_hides_invalid_value(self):
+        from gui.panels.data_display_panel import HWT606DisplayWidget
+        widget = HWT606DisplayWidget('IMU1')
+        try:
+            for value in (100.,-100.):
+                widget.update_data({'vel_y_mm_s':value,'velocity_valid':True})
+                self.assertEqual(widget.y_velocity_label.text(),f'Y轴速度：{value:+.1f} mm/s')
+            widget.update_data({'vel_y_mm_s':100.,'velocity_valid':False})
+            self.assertEqual(widget.y_velocity_label.text(),'Y轴速度：-- mm/s')
+        finally:
+            widget.deleteLater(); self.app.processEvents()
 
     def test_serial_open_failure_leaves_no_connected_sensor(self):
         from core.sensor_manager import SensorManager
