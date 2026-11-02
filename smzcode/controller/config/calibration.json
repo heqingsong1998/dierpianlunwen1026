@@ -1,5 +1,12 @@
 {
-  "model_id": "foot_polynomial_v1",
+  "model_id": "foot_legacy_axes_joint_normal_v1",
+  "normal_force": {
+    "model_id": "two_channel_linear_raw_row_v1_20261031",
+    "status": "trial",
+    "reference_sign": "compression_negative",
+    "coefficients": [-0.0005788864179388159, -0.0017128280366230562, -0.071442884800486],
+    "source": "21-session raw-row joint linear fit; not refitted on nominal sampling time"
+  },
   "gravity": 9.8,
   "force_scale": 1.6,
   "moment_divisor": 20.0,

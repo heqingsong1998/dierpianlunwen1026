@@ -1,5 +1,5 @@
 """
-数据记录器 - 黏附脚、六轴力与控制事件的异步 CSV 写入
+数据记录器 - IMU1、黏附脚、六轴力与控制事件的异步 CSV 写入
 """
 import os
 import csv
@@ -23,13 +23,14 @@ FOOT_METADATA_COLUMNS = [
     'sample_sequence', 'ready_us', 'host_received_ns', 'baseline_generation', 'pin_state',
 ]
 FOOT_CSV_COLUMNS = ['timestamp', 'timestamp_ms', *FOOT_RAW_COLUMNS,
-                    *FOOT_CAL_COLUMNS, *FOOT_METADATA_COLUMNS]
+                    *FOOT_CAL_COLUMNS, *FOOT_METADATA_COLUMNS,
+                    'Fz_total_cal', 'Fz_total_ref_cal', 'normal_force_model_id']
 FOOT_BASELINE_INDEX = FOOT_CSV_COLUMNS.index('baseline_generation')
 PROTOCOL_COLUMNS = {
     'controller': ['sensor_ts_ms', 'event', 'event_ns', 'sample_sequence', 'ready_us',
                    'host_received_ns', 'input_received_ns', 'processing_started_ns',
-                   'submitted_ns', 'controller_us', 'fz1_n', 'fz2_n',
-                   'threshold_fz1_n', 'threshold_fz2_n', 'threshold_reached', 'is_trigger',
+                   'submitted_ns', 'controller_us', 'fz_total_n', 'fz_total_reference_n',
+                   'threshold_total_n', 'normal_force_model_id', 'threshold_reached', 'is_trigger',
                    'action', 'command_id', 'state', 'settings_revision', 'calibration_id',
                    'dropped_inputs', 'message', 'config_json'],
     'stage_pairs': ['sensor_ts_ms', 'host_received_ns', 'protocol_version',
@@ -44,6 +45,15 @@ PROTOCOL_COLUMNS = {
                  'submitted_ns', 'controller_us', 'transport_sum_us', 'gpio_wait_us',
                  'gpio_changed', 'zero_pending', 'timing_valid', 'timing_error'],
 }
+
+IMU1_COLUMNS = [
+    'timestamp_ms', 'host_received_ns', 'sample_sequence', 'chip_time_ms', 'frame_complete',
+    'acc_x','acc_y','acc_z','gyro_x','gyro_y','gyro_z','angle_x','angle_y','angle_z','temperature',
+    'linear_acc_x','linear_acc_y','linear_acc_z','vel_x','vel_y','vel_z','speed_mps',
+    'velocity_valid','velocity_status','velocity_generation','velocity_run_id','calibration_progress',
+    'integration_dt_s','integration_time_source','integration_elapsed_s',
+    'bias_x','bias_y','bias_z','reference_yaw_deg','gravity_mps2','velocity_model_id',
+]
 
 
 class DataRecorder:
@@ -65,6 +75,7 @@ class DataRecorder:
 
         # 数据队列（异步写入）
         self.data_queues = {
+            'hwt606_1': queue.Queue(maxsize=5000),
             'nianfujiao_style0': queue.Queue(maxsize=5000),
             'liuzhouli': queue.Queue(maxsize=10000),
             'nianfujiao_frames': queue.Queue(maxsize=5000),
@@ -87,6 +98,7 @@ class DataRecorder:
         }
 
         self.data_counts = {
+            'hwt606_1': 0,
             'nianfujiao': 0,
             'liuzhouli': 0,
         }
@@ -124,6 +136,7 @@ class DataRecorder:
         try:
             self._create_nianfujiao_csv()
             self._create_liuzhouli_csv()
+            self._create_hwt606_csv('hwt606_1')
             self._create_nianfujiao_csv('nianfujiao_frames')
             for kind in PROTOCOL_COLUMNS:
                 self._create_protocol_csv(kind)
@@ -261,10 +274,20 @@ class DataRecorder:
         """
         写入 HWT606 传感器数据（放入队列）
 
-        约定：
-        - data['timestamp_ms'] 由 SensorManager 统一线程给出（统一时间轴）
-        - 这里额外生成一个人类可读的 timestamp 字符串
+        IMU1 每个真实输出周期一行；无效速度留空，保留状态与原始量。
         """
+        if sensor_id == 'hwt606_1':
+            with self.lock:
+                if not self.is_recording:
+                    return
+                row = [self._timestamp_ms_to_str(data.get('timestamp_ms'))]
+                row.extend(data.get(key, '') for key in IMU1_COLUMNS)
+                try:
+                    self.data_queues[sensor_id].put_nowait(row)
+                    self.data_counts[sensor_id] += 1
+                except queue.Full:
+                    print('[WARN] IMU1 记录队列已满，丢弃数据')
+            return
         if not self.is_recording:
             return
 
@@ -299,7 +322,7 @@ class DataRecorder:
     def write_nianfujiao_data(self, style: int, data: Dict[str, Any],
                               queue_key: str = 'nianfujiao_style0'):
         """
-        两个足端文件共用 31 列；内部仍保留原 24 字段协议视图。
+        两个足端文件共用 34 列；内部仍保留原 24 字段协议视图。
 
         style0 的 timestamp_ms 为六轴主时间轴配对时间，frames 为足端接收时间。
         等待基准版本只发生在保存端，保留原始接收时间及同步配对顺序。
@@ -326,7 +349,10 @@ class DataRecorder:
             row = ([timestamp_str, ts_ms] + list(raw[:14]) + [
                 calibrated[0], calibrated[1], float(fz1), calibrated[3], calibrated[4],
                 calibrated[7], calibrated[8], float(fz2), calibrated[10], calibrated[11],
-            ] + [data.get(key, '') for key in FOOT_METADATA_COLUMNS])
+            ] + [data.get(key, '') for key in FOOT_METADATA_COLUMNS] + [
+                data.get('fz_total_cal', ''), data.get('fz_total_reference_n', ''),
+                data.get('normal_force_model_id', ''),
+            ])
             with self.lock:
                 if not self.is_recording:
                     return
@@ -437,7 +463,7 @@ class DataRecorder:
         writer = csv.writer(file)
 
         # 表头：增加 timestamp_ms 列（统一时间轴）
-        writer.writerow([
+        writer.writerow(['timestamp', *IMU1_COLUMNS] if sensor_id == 'hwt606_1' else [
             'timestamp',        # 人类可读
             'timestamp_ms',     # 统一帧时间戳（ms）
             'acc_x', 'acc_y', 'acc_z',
@@ -450,8 +476,14 @@ class DataRecorder:
         self.csv_files[sensor_id] = file
         self.csv_writers[sensor_id] = writer
 
+    def write_imu1_snapshot(self, snapshot):
+        if self.is_recording and self.session_dir:
+            with open(os.path.join(self.session_dir, 'imu1_velocity_config.json'),
+                      'w', encoding='utf8') as handle:
+                json.dump(snapshot, handle, ensure_ascii=False, indent=2, allow_nan=False)
+
     def _create_nianfujiao_csv(self, queue_key='nianfujiao_style0'):
-        """创建两个同结构的足端 CSV，统一为 31 列。"""
+        """创建两个同结构的足端 CSV，统一为 34 列。"""
         filepath0 = os.path.join(self.session_dir, f"{queue_key}.csv")
         file0 = open(filepath0, 'w', newline='', encoding='utf-8')
         writer0 = csv.writer(file0)

@@ -1,4 +1,4 @@
-"""两组法向力同时达到各自阈值，触发一次。未达到时保持输出。"""
+"""压缩为正的总法向力达到单一阈值时触发一次。"""
 from dataclasses import asdict, dataclass
 import json
 import math
@@ -11,21 +11,27 @@ SETTINGS_PATH = Path(__file__).resolve().parents[1] / 'config' / 'settings.json'
 
 @dataclass(frozen=True)
 class ThresholdSettings:
-    threshold_fz1_n: float = 1.5
-    threshold_fz2_n: float = 1.5
+    threshold_total_n: float = 3.0
     trigger_action: int = 1  # PA4: 0=LOW, 1=HIGH
 
     def __post_init__(self):
-        for value in (self.threshold_fz1_n, self.threshold_fz2_n):
-            if not math.isfinite(value) or not -10000 <= value <= 10000:
-                raise ValueError('力阈值必须在 -10000 到 10000 N 之间')
+        if not math.isfinite(self.threshold_total_n) or not 0 <= self.threshold_total_n <= 10000:
+            raise ValueError('总法向力阈值必须在 0 到 10000 N 之间（压缩为正）')
         if self.trigger_action not in (0, 1):
             raise ValueError('触发动作只能为 PA4 LOW 或 HIGH')
 
     @classmethod
     def load(cls, path=SETTINGS_PATH):
         with Path(path).open(encoding='utf-8') as handle:
-            return cls(**json.load(handle))
+            values = json.load(handle)
+        # 旧配置的两阈值之和仅作为迁移后的初始设置，不等价于旧 AND 判据。
+        legacy_keys = {'threshold_fz1_n', 'threshold_fz2_n'}
+        if legacy_keys & values.keys():
+            if ('threshold_total_n' in values or not legacy_keys <= values.keys() or
+                    values.keys() - legacy_keys - {'trigger_action'}):
+                raise ValueError('阈值配置混用了旧双阈值与新总力字段')
+            values['threshold_total_n'] = values.pop('threshold_fz1_n') + values.pop('threshold_fz2_n')
+        return cls(**values)
 
     def save(self, path=SETTINGS_PATH):
         path = Path(path)
@@ -42,5 +48,4 @@ class ThresholdSettings:
 
 
 def threshold_reached(signal, settings):
-    return (signal['fz1_total_cal'] >= settings.threshold_fz1_n and
-            signal['fz2_total_cal'] >= settings.threshold_fz2_n)
+    return signal['fz_total_cal'] >= settings.threshold_total_n

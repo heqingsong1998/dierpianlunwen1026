@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         self.config_path = config_path
         self._liuzhouli_zero_busy = False
         self._proximity_dialog = None
+        self._offline_workbench = None
         
         # 创建核心组件
         self.sensor_manager = SensorManager(config_path)
@@ -107,7 +108,10 @@ class MainWindow(QMainWindow):
         
         # 数据显示面板
         self.data_display_panel = DataDisplayPanel()
-        right_splitter.addWidget(self.data_display_panel)
+        display_scroll = QScrollArea()
+        display_scroll.setWidgetResizable(True)
+        display_scroll.setWidget(self.data_display_panel)
+        right_splitter.addWidget(display_scroll)
         
         # 日志显示面板
         self.log_widget = LogWidget()
@@ -147,7 +151,8 @@ class MainWindow(QMainWindow):
         self.connection_panel.disconnect_all.connect(self._on_disconnect_all)
 
         # ========== 数据记录回调（高频直接调用，不通过信号） ==========
-        # 仅保留当前需要采集的两个传感器（粘附脚 + 六轴力）
+        # 各真实 IMU1 新帧直接进入记录器，GUI 仅显示。
+        self.sensor_manager.record_callback_hwt606_1 = self.data_recorder.write_hwt606_data
         self.sensor_manager.record_callback_nianfujiao = self.data_recorder.write_nianfujiao_data
         self.sensor_manager.record_callback_liuzhouli = self.data_recorder.write_liuzhouli_data
         self.sensor_manager.record_callback_nianfujiao_aux = self.data_recorder.write_nianfujiao_aux
@@ -182,6 +187,8 @@ class MainWindow(QMainWindow):
         )
         
         # ========== 数据更新信号 ==========
+        self.sensor_manager.hwt606_1_data_updated.connect(self._on_hwt606_1_data_updated)
+        self.data_display_panel.hwt606_1_widget.zero_requested.connect(self._on_imu1_zero)
         self.sensor_manager.nianfujiao_data_updated.connect(
             self._on_nianfujiao_data_updated
         )
@@ -196,8 +203,34 @@ class MainWindow(QMainWindow):
         self.recording_panel.start_recording.connect(self._on_start_recording)
         self.recording_panel.stop_recording.connect(self._on_stop_recording)
         self.recording_panel.open_folder.connect(self._on_open_folder)
+        self.recording_panel.offline_requested.connect(self._on_show_offline)
     
     # ==================== 连接管理槽函数 ====================
+
+    def _offline_idle_check(self):
+        if self.data_recorder.is_recording:
+            return '请先停止数据采集，再运行离线分析或应用系数。'
+        if self.sensor_manager.controller.snapshot()['active']:
+            return '请先停止控制器，再运行离线分析或应用系数。'
+        return None
+
+    def _on_show_offline(self):
+        if self._offline_workbench is None:
+            try:
+                from controller.visualization.offline_workbench import OfflineWorkbench
+                self._offline_workbench = OfflineWorkbench(
+                    self, current_session=self.data_recorder.get_session_path(),
+                    reload_callback=self.sensor_manager.controller.reload_calibration,
+                    idle_check=self._offline_idle_check)
+                self._offline_workbench.coefficients_applied.connect(
+                    lambda:self.control_panel.update_controller_status(
+                        self.sensor_manager.controller.snapshot()))
+            except Exception as exc:
+                QMessageBox.warning(self, '离线工具', f'窗口未能打开：{exc}\n请检查 requirements.txt 中的依赖。')
+                return
+        self._offline_workbench.show()
+        self._offline_workbench.raise_()
+        self._offline_workbench.activateWindow()
 
     def _on_show_proximity(self):
         """按需打开只读显示窗口；重复点击复用窗口，不占用真实采集回调。"""
@@ -236,6 +269,9 @@ class MainWindow(QMainWindow):
             return False
 
     def _on_controller_start(self, values):
+        if self._offline_workbench is not None and self._offline_workbench.busy:
+            QMessageBox.information(self, '离线分析进行中', '请等待离线分析完成后再启动控制器。')
+            return
         if not self._on_controller_apply(values):
             return
         try:
@@ -268,6 +304,8 @@ class MainWindow(QMainWindow):
             success = self.sensor_manager.connect_nianfujiao()
         elif sensor_id == 'liuzhouli':
             success = self.sensor_manager.connect_liuzhouli()
+        elif sensor_id == 'hwt606_1':
+            success = self._connect_imu1()
         
         self.connection_panel.set_all_busy(False)
         
@@ -282,6 +320,8 @@ class MainWindow(QMainWindow):
             self.sensor_manager.disconnect_nianfujiao()
         elif sensor_id == 'liuzhouli':
             self.sensor_manager.disconnect_liuzhouli()
+        elif sensor_id == 'hwt606_1':
+            self.sensor_manager.disconnect_hwt606_1()
         
         QMessageBox.information(self, "成功", f"{sensor_id} 已断开！")
     
@@ -291,20 +331,37 @@ class MainWindow(QMainWindow):
         
         results = {
             'nianfujiao': self.sensor_manager.connect_nianfujiao(),
-            'liuzhouli': self.sensor_manager.connect_liuzhouli()
+            'liuzhouli': self.sensor_manager.connect_liuzhouli(),
+            'hwt606_1': self._connect_imu1(),
         }
         
         self.connection_panel.set_all_busy(False)
         
         success_count = sum(results.values())
-        if success_count == 2:
+        if success_count == len(results):
             QMessageBox.information(self, "成功", "所有传感器连接成功！")
         else:
             failed = [k for k, v in results.items() if not v]
             QMessageBox.warning(
                 self, "部分失败", 
-                f"成功: {success_count}/2\n失败: {', '.join(failed)}"
+                f"成功: {success_count}/{len(results)}\n失败: {', '.join(failed)}"
             )
+
+    def _connect_imu1(self):
+        options = self.connection_panel.sensor_widgets['hwt606_1'].connection_options()
+        config = self.sensor_manager.config['sensor']['hwt606_1']
+        config.update(port=options['port'], baud=options['baud'])
+        config.setdefault('velocity', {})['time_source'] = options['time_source']
+        return self.sensor_manager.connect_hwt606_1()
+
+    def _on_imu1_zero(self):
+        try:
+            self.sensor_manager.zero_imu1_velocity()
+            widget = self.data_display_panel.hwt606_1_widget
+            widget.update_data({'velocity_status':'calibrating',
+                                'integration_time_source':self.sensor_manager.imu1_velocity.settings.time_source})
+        except Exception as exc:
+            QMessageBox.warning(self, 'IMU1 速度归零', str(exc))
     
     def _on_disconnect_all(self):
         """断开所有传感器"""
@@ -335,6 +392,8 @@ class MainWindow(QMainWindow):
         """传感器连接状态变化"""
         # 更新连接面板状态
         self.connection_panel.update_sensor_status(sensor_id, connected)
+        if sensor_id == 'hwt606_1':
+            self.data_display_panel.hwt606_1_widget.set_connected(connected)
         
         # 更新控制面板按钮状态
         self.control_panel.update_button_states(
@@ -415,9 +474,6 @@ class MainWindow(QMainWindow):
         # 更新显示
         self.data_display_panel.update_hwt606_1_data(data)
         
-        # 如果正在采集，写入数据
-        if self.data_recorder.is_recording:
-            self.data_recorder.write_hwt606_data('hwt606_1', data)
     
     def _on_hwt606_2_data_updated(self, data: dict):
         """HWT606-2数据更新"""
@@ -442,6 +498,10 @@ class MainWindow(QMainWindow):
     
     def _on_start_recording(self):
         """开始采集"""
+        if self._offline_workbench is not None and self._offline_workbench.busy:
+            self.recording_panel.reset()
+            QMessageBox.information(self, '离线分析进行中', '请等待离线分析完成后再开始采集。')
+            return
         if self._liuzhouli_zero_busy:
             self.recording_panel.reset()
             self.recording_panel.start_btn.setEnabled(False)
@@ -455,6 +515,7 @@ class MainWindow(QMainWindow):
         # 启动数据记录
         if self.data_recorder.start_recording():
             self.data_recorder.write_controller_snapshot(self.sensor_manager.controller.snapshot())
+            self.data_recorder.write_imu1_snapshot(self.sensor_manager.imu1_snapshot())
             self._update_liuzhouli_zero_button()
             # 更新存储路径
             session_path = self.data_recorder.get_session_path()
@@ -523,6 +584,10 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """窗口关闭事件"""
+        if self._offline_workbench is not None and self._offline_workbench.busy:
+            self.statusBar().showMessage('正在导出离线结果，请等待完成后关闭窗口')
+            event.ignore()
+            return
         if self._liuzhouli_zero_busy:
             self.statusBar().showMessage("正在清零，请等待清零结束后关闭窗口")
             event.ignore()
@@ -546,6 +611,8 @@ class MainWindow(QMainWindow):
         
         if self._proximity_dialog is not None:
             self._proximity_dialog.close()
+        if self._offline_workbench is not None:
+            self._offline_workbench.close()
         # 断开所有传感器
         self.sensor_manager.disconnect_all()
         

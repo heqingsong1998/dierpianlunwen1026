@@ -242,7 +242,7 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(int(rows[0]['ready_us']), 0xFFFFFF80)
                 self.assertEqual(int(rows[0]['Fx1_raw']), -12)
                 self.assertTrue(rows[0]['host_received_ns'])
-                self.assertEqual(len(rows[0]), 31)
+                self.assertEqual(len(rows[0]), 34)
                 self.assertEqual(rows[0]['baseline_generation'], '3')
                 self.assertEqual(rows[0]['JJJ2_1_raw'], '10')
                 self.assertIn('Fz1_cal', rows[0])

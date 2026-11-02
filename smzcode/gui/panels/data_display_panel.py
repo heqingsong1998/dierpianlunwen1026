@@ -3,18 +3,21 @@
 """
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QLabel, QGridLayout, QTableWidget,
-                             QTableWidgetItem, QHeaderView)
-from PyQt5.QtCore import Qt
+                             QTableWidgetItem, QHeaderView, QPushButton)
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 
 class HWT606DisplayWidget(QWidget):
     """HWT606传感器数据显示组"""
     
+    zero_requested = pyqtSignal()
+
     def __init__(self, sensor_name: str, parent=None):
         super().__init__(parent)
         self.sensor_name = sensor_name
         self._setup_ui()
+        self.set_connected(False)
     
     def _setup_ui(self):
         """设置UI"""
@@ -97,7 +100,20 @@ class HWT606DisplayWidget(QWidget):
         self.vel_z_label.setFont(font)
         grid.addWidget(self.vel_z_label, 3, 3)
 
+        self.speed_label = QLabel('合速度：-- m/s（-- mm/s）')
+        self.speed_label.setStyleSheet('font-size: 17px; font-weight: bold; color: #155e75;')
+        self.speed_label.setWordWrap(True)
+        self.status_label = QLabel('IMU1 未连接')
+        self.status_label.setWordWrap(True)
+        self.zero_button = QPushButton('已确认静止：标定并将速度归零（约2秒）')
+        self.zero_button.setEnabled(False)
+        self.zero_button.clicked.connect(self.zero_requested.emit)
+        self.frame_label = QLabel('速度坐标：标定时的初始航向 X、水平 Y、向上 Z；短时积分估计')
+        self.frame_label.setWordWrap(True)
+
         layout.addLayout(grid)
+        for widget in (self.speed_label,self.status_label,self.zero_button,self.frame_label):
+            layout.addWidget(widget)
         self.setLayout(layout)
         
         # 样式
@@ -117,24 +133,51 @@ class HWT606DisplayWidget(QWidget):
             data: 数据字典
         """
         # 加速度
-        self.acc_x_label.setText(f"X: {data.get('acc_x', 0.0):+.3f}")
-        self.acc_y_label.setText(f"Y: {data.get('acc_y', 0.0):+.3f}")
-        self.acc_z_label.setText(f"Z: {data.get('acc_z', 0.0):+.3f}")
+        def number(key, digits=3):
+            value = data.get(key)
+            return f'{value:+.{digits}f}' if value is not None else '--'
+        self.acc_x_label.setText('X: '+number('acc_x'))
+        self.acc_y_label.setText('Y: '+number('acc_y'))
+        self.acc_z_label.setText('Z: '+number('acc_z'))
         
         # 角速度
-        self.gyro_x_label.setText(f"X: {data.get('gyro_x', 0.0):+.3f}")
-        self.gyro_y_label.setText(f"Y: {data.get('gyro_y', 0.0):+.3f}")
-        self.gyro_z_label.setText(f"Z: {data.get('gyro_z', 0.0):+.3f}")
+        self.gyro_x_label.setText('X: '+number('gyro_x'))
+        self.gyro_y_label.setText('Y: '+number('gyro_y'))
+        self.gyro_z_label.setText('Z: '+number('gyro_z'))
         
         # 角度
-        self.angle_x_label.setText(f"Roll: {data.get('angle_x', 0.0):+.2f}")
-        self.angle_y_label.setText(f"Pitch: {data.get('angle_y', 0.0):+.2f}")
-        self.angle_z_label.setText(f"Yaw: {data.get('angle_z', 0.0):+.2f}")
+        self.angle_x_label.setText('Roll: '+number('angle_x', 2))
+        self.angle_y_label.setText('Pitch: '+number('angle_y', 2))
+        self.angle_z_label.setText('Yaw: '+number('angle_z', 2))
 
         # 速度
-        self.vel_x_label.setText(f"X: {data.get('vel_x', 0.0):+.3f}")
-        self.vel_y_label.setText(f"Y: {data.get('vel_y', 0.0):+.3f}")
-        self.vel_z_label.setText(f"Z: {data.get('vel_z', 0.0):+.3f}")
+        valid = data.get('velocity_valid', False)
+        for axis, label in zip('xyz', (self.vel_x_label,self.vel_y_label,self.vel_z_label)):
+            label.setText(axis.upper()+': '+(number('vel_'+axis,4) if valid else '--'))
+        speed = data.get('speed_mps')
+        self.speed_label.setText(f'合速度：{speed:.4f} m/s（{speed*1000:.1f} mm/s）'
+                                if valid and speed is not None else '合速度：-- m/s（-- mm/s）')
+        statuses = {'needs_zero':'请确认静止，然后点击标定／速度归零',
+                    'calibrating':'正在采集静止样本', 'hold_still':'检测到运动或波动，请继续保持静止',
+                    'tracking':'速度估计中', 'gap_requires_zero':'数据中断或缺帧：速度已失效，请静止后重新归零',
+                    'invalid_time':'芯片时间缺失或异常；检查输出，必要时断开并选择按输出周期估计',
+                    'incomplete_frame':'IMU 周期不完整，等待新数据', 'stale':'IMU1 超过0.5秒未更新，速度已失效'}
+        status = data.get('velocity_status','needs_zero')
+        text = statuses.get(status, status)
+        if status == 'calibrating':
+            text += f" {data.get('calibration_progress',0)*100:.0f}%"
+        source = '芯片时间' if data.get('integration_time_source') == 'chip' else '固定周期估计'
+        self.status_label.setText(text+'  |  '+source)
+
+    def set_connected(self, connected):
+        self.zero_button.setEnabled(connected)
+        if connected:
+            self.status_label.setText('IMU1 已连接，等待新帧；请静止后标定／归零')
+        else:
+            for label, axis in zip((self.vel_x_label,self.vel_y_label,self.vel_z_label),'XYZ'):
+                label.setText(axis+': --')
+            self.speed_label.setText('合速度：-- m/s（-- mm/s）')
+            self.status_label.setText('IMU1 未连接')
 
 
 
@@ -263,9 +306,11 @@ class NianFuJiaoDisplayWidget(QWidget):
         self.style0_table = self._create_table(len(headers), headers)
         layout.addWidget(self.style0_table)
         self.frame_info_label = QLabel('等待黏附脚数据；下位机清零，上位机换算力值')
+        self.total_force_label = QLabel('联合总法向力（压缩为正）：-- N')
         self.pair_info_label = QLabel('等待 stage 对和与基准版本')
         self.feedback_label = QLabel('等待命令反馈')
-        for label in (self.frame_info_label, self.pair_info_label, self.feedback_label):
+        for label in (self.total_force_label, self.frame_info_label,
+                      self.pair_info_label, self.feedback_label):
             label.setWordWrap(True)
             layout.addWidget(label)
         self.setLayout(layout)
@@ -290,6 +335,13 @@ class NianFuJiaoDisplayWidget(QWidget):
         if style != 0:
             return
         self._update_table(self.style0_table, data)
+        if data.get('fz_total_cal') is not None:
+            self.total_force_label.setText(
+                f"联合总法向力：{data['fz_total_cal']:.4f} N（压缩为正）"
+                f"  |  六轴符号参考：{data['fz_total_reference_n']:.4f} N\n"
+                f"模型：{data['normal_force_model_id']}")
+        else:
+            self.total_force_label.setText('联合总法向力（压缩为正）：-- N')
         sequence = data.get('sample_sequence', 0)
         self.frame_info_label.setText(
             f"采样帧: {sequence or '旧版/未提供'}  |  MCU 数据准备: {data.get('ready_us', 0)} µs"
@@ -348,6 +400,9 @@ class DataDisplayPanel(QWidget):
         title_label = QLabel("<h3>传感器数据显示</h3>")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
+
+        self.hwt606_1_widget = HWT606DisplayWidget('IMU1 · 实时速度估计')
+        layout.addWidget(self.hwt606_1_widget)
         
         # 六轴力传感器
         self.liuzhouli_widget = LiuZhouLiDisplayWidget()
@@ -360,8 +415,7 @@ class DataDisplayPanel(QWidget):
         self.setLayout(layout)
     
     def update_hwt606_1_data(self, data: dict):
-        """兼容旧调用：当前界面不显示 HWT606-1 数据"""
-        return
+        self.hwt606_1_widget.update_data(data)
     
     def update_hwt606_2_data(self, data: dict):
         """兼容旧调用：当前界面不显示 HWT606-2 数据"""

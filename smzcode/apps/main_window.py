@@ -48,6 +48,7 @@ def main():
         print("[INFO] 支持传感器:")
         print("       - 粘附脚传感器")
         print("       - 六轴力传感器")
+        print("       - IMU1（HWT606，逐帧记录与短时速度估计）")
         print("[INFO] 黏附脚上行: 0x123 通道/测时、0x124 对和、0x125 反馈")
         print("[INFO] 刷新频率: 10Hz")
         print("=" * 60)

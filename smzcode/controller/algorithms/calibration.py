@@ -1,8 +1,10 @@
-"""原有二次多项式标定。参数位于 controller/config/calibration.json。"""
+"""保留各分量原标定；总法向力直接使用两路 raw 的联合模型。"""
 import copy
 import json
 import math
 from pathlib import Path
+
+from .normal_force import JointNormalForce
 
 RAW_FIELDS = (
     'Fx1', 'Fy1', 'Fz1_plus', 'Mx1', 'My1', 'JJJ1_1', 'JJJ1_2',
@@ -33,6 +35,7 @@ class Calibration:
             coefficients = cfg['coefficients'][name]
             if len(coefficients) != 3 or not all(math.isfinite(float(x)) for x in coefficients):
                 raise ValueError(f'{name} 需要三个有限的多项式系数')
+        self._normal_force = JointNormalForce(cfg.get('normal_force'))
 
     @property
     def model_id(self):
@@ -64,4 +67,5 @@ class Calibration:
             'fz1_total_cal': values[2] + values[14],
             'fz2_total_cal': values[9] + values[15],
             'calibration_id': self.model_id,
+            **self._normal_force.apply(raw),
         }

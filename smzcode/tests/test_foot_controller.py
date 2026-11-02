@@ -25,7 +25,7 @@ from core.sensor_manager import SensorManager
 from core.data_recorder import DataRecorder
 
 
-def frame(sequence, x1=1200, x2=1300):
+def frame(sequence, x1=1500, x2=1600):
     raw = [0] * 24
     raw[2] = raw[14] = x1
     raw[9] = raw[15] = x2
@@ -51,19 +51,37 @@ class CalibrationTests(unittest.TestCase):
             for name in CALIBRATED_FIELDS:
                 self.assertEqual(result[RAW_FIELDS.index(name)], getattr(utils, 'cal_' + name)(value))
 
-    def test_threshold_is_inclusive_and_requires_both_forces(self):
-        settings = ThresholdSettings(1.5, 2.5)
-        for first, second, expected in ((1.5, 2.5, True), (1.49999, 2.5, False),
-                                        (2, 2.49999, False), (-3, -4, False)):
-            self.assertEqual(threshold_reached({'fz1_total_cal': first, 'fz2_total_cal': second},
-                                              settings), expected)
-        for values in ((float('nan'), 1, 1), (1, float('inf'), 1), (1, 1, 2)):
+    def test_total_threshold_is_inclusive_and_does_not_take_absolute_value(self):
+        settings = ThresholdSettings(3.0)
+        for force, expected in ((3.0, True), (2.99999, False), (4, True), (-4, False)):
+            self.assertEqual(threshold_reached({'fz_total_cal': force}, settings), expected)
+        for values in ((float('nan'), 1), (float('inf'), 1), (-1, 1), (1, 2)):
             with self.assertRaises(ValueError):
                 ThresholdSettings(*values)
 
+    def test_joint_force_uses_raw_inputs_and_reference_sign_without_legacy_scaling(self):
+        result = Calibration().apply(frame(1, 1493, 967)['raw'])
+        # 实验5253行的固定联合模型结果；不乘旧模型的9.8或1.6。
+        self.assertAlmostEqual(result['fz_total_reference_n'], -2.5920250181976336)
+        self.assertAlmostEqual(result['fz_total_cal'], 2.5920250181976336)
+        tension = Calibration().apply(frame(2, -2000, -2000)['raw'])
+        self.assertLess(tension['fz_total_cal'], 0)
+        self.assertFalse(threshold_reached(tension, ThresholdSettings()))
+
+    def test_old_settings_migrate_to_one_initial_total_threshold(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'settings.json'
+            path.write_text(json.dumps({'threshold_fz1_n': 1.2, 'threshold_fz2_n': 1.8,
+                                        'trigger_action': 0}), encoding='utf-8')
+            migrated = ThresholdSettings.load(path)
+            self.assertEqual(migrated, ThresholdSettings(3.0, 0))
+            migrated.save(path)
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')),
+                             {'threshold_total_n': 3.0, 'trigger_action': 0})
+
     def test_settings_persist_and_custom_calibration_loads(self):
         with tempfile.TemporaryDirectory() as temp:
-            settings = ThresholdSettings(2.1, -0.5, 0)
+            settings = ThresholdSettings(2.1, 0)
             path = Path(temp) / 'settings.json'
             settings.save(path)
             self.assertEqual(ThresholdSettings.load(path), settings)
@@ -73,11 +91,16 @@ class CalibrationTests(unittest.TestCase):
             cfg_path = Path(temp) / 'calibration.json'
             cfg_path.write_text(json.dumps(cfg), encoding='utf-8')
             result = Calibration(cfg_path).apply(frame(1)['raw'])
-            self.assertAlmostEqual(result['fz1_total_cal'], 1200 / 1000 * 9.8 * 1.6)
+            self.assertAlmostEqual(result['fz1_total_cal'], 1500 / 1000 * 9.8 * 1.6)
             self.assertEqual(result['calibration_id'], 'experiment_custom')
             cfg['coefficients']['Fz1_plus'][0] = float('nan')
             cfg_path.write_text(json.dumps(cfg), encoding='utf-8')
             with self.assertRaises(ValueError):
+                Calibration(cfg_path)
+            cfg = Calibration().snapshot()
+            cfg['normal_force']['coefficients'][1] = float('nan')
+            cfg_path.write_text(json.dumps(cfg), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, '总法向力'):
                 Calibration(cfg_path)
 
 
@@ -104,7 +127,7 @@ class WorkerTests(unittest.TestCase):
     def decisions(self):
         return [row for row in self.events if row['event'] == 'decision']
 
-    def put(self, sequence, x1=1200, x2=1300):
+    def put(self, sequence, x1=1500, x2=1600):
         count = len(self.decisions())
         self.assertTrue(self.controller.enqueue(frame(sequence, x1, x2)))
         wait_for(lambda: len(self.decisions()) > count)
@@ -129,14 +152,24 @@ class WorkerTests(unittest.TestCase):
 
     def test_new_threshold_and_low_output_apply_to_new_inputs(self):
         self.controller.start(3)
-        self.controller.configure(ThresholdSettings(5, 5, 0))
+        self.controller.configure(ThresholdSettings(10, 0))
         self.put(1)
         self.assertEqual(self.sent[-1].action, 2)
-        self.controller.configure(ThresholdSettings(1, 1, 0))
+        self.controller.configure(ThresholdSettings(2, 0))
         self.put(2)
         self.assertEqual(self.sent[-1].action, 0)
         self.assertEqual(self.decisions()[-1]['settings_revision'], 3)
         self.assertEqual(self.controller.snapshot()['state'], 'triggered')
+
+    def test_total_force_can_trigger_with_one_old_per_chip_force_below_threshold(self):
+        self.controller.start(3)
+        self.put(1, 0, 2000)
+        self.assertEqual(self.sent[-1].action, 1)
+        row = self.decisions()[-1]
+        self.assertGreater(row['fz_total_n'], 3)
+        self.assertEqual(row['threshold_total_n'], 3)
+        self.assertAlmostEqual(row['fz_total_reference_n'], -row['fz_total_n'])
+        self.assertIn('normal_force_model_id', row)
 
     def test_ack_after_send_returns_and_no_second_trigger_while_waiting(self):
         self.early_ack = False
@@ -220,13 +253,13 @@ class WorkerTests(unittest.TestCase):
             return original(*args)
 
         self.controller._send_action = blocked_send
-        self.controller.configure(ThresholdSettings(100, 100, 1))
+        self.controller.configure(ThresholdSettings(100, 1))
         self.controller.start(3)
         self.controller.enqueue(frame(1))
         self.assertTrue(entered.wait(1))
         for sequence in range(2, 14):
             self.controller.enqueue(frame(sequence))
-        self.controller.configure(ThresholdSettings(0, 0, 0))
+        self.controller.configure(ThresholdSettings(0, 0))
         self.controller.enqueue(frame(14))
         release.set()
         wait_for(lambda: any(row.get('sample_sequence') == 14 for row in self.decisions()))
@@ -260,7 +293,7 @@ class ControllerIntegrationTests(unittest.TestCase):
         manager.nianfujiao = device()
         manager.nianfujiao.register_callback(manager._on_nianfujiao_callback)
         manager.connection_status['nianfujiao'] = True
-        manager.controller.configure(ThresholdSettings())
+        manager.controller.configure(ThresholdSettings(2.5))
         self.addCleanup(manager.controller.stop)
         self.addCleanup(manager.display_timer.stop)
         return manager
@@ -314,8 +347,16 @@ class ControllerIntegrationTests(unittest.TestCase):
             self.assertTrue(all(6999 <= float(row['transport_sum_us']) <= 7000 for row in feedback))
             self.assertEqual(len(rows('frames')), 2)
             snapshot = json.loads((path / 'controller_config.json').read_text(encoding='utf-8'))
-            self.assertEqual(snapshot['settings']['threshold_fz1_n'], 1.5)
+            self.assertEqual(snapshot['settings']['threshold_total_n'], 2.5)
             self.assertIn('coefficients', snapshot['calibration'])
+            self.assertIn('normal_force', snapshot['calibration'])
+            self.assertAlmostEqual(float(decisions[0]['fz_total_n']),
+                                   -float(decisions[0]['fz_total_reference_n']))
+            self.assertEqual(float(decisions[0]['threshold_total_n']), 2.5)
+            for row in rows('frames'):
+                self.assertAlmostEqual(float(row['Fz_total_cal']),
+                                       float(decisions[0]['fz_total_n']))
+                self.assertTrue(row['normal_force_model_id'])
 
     def test_manual_zero_stops_controller_and_requires_new_baseline_before_start(self):
         manager = self.make_manager()
@@ -340,14 +381,18 @@ class ControllerIntegrationTests(unittest.TestCase):
         try:
             panel = window.control_panel
             self.assertFalse(panel.controller_start_btn.isEnabled())
-            panel.threshold_fz1.setValue(2.4)
-            panel.threshold_fz2.setValue(2.8)
+            panel.threshold_total.setValue(2.4)
             panel.trigger_action.setCurrentIndex(0)
             with patch.object(ThresholdSettings, 'save') as save:
                 panel.controller_apply_btn.click()
                 save.assert_called_once()
-            self.assertEqual(window.sensor_manager.controller.settings, ThresholdSettings(2.4, 2.8, 0))
+            self.assertEqual(window.sensor_manager.controller.settings, ThresholdSettings(2.4, 0))
             self.assertIn('2.4', panel.controller_applied_label.text())
+            self.assertIn('总法向力', panel.controller_applied_label.text())
+            raw = frame(1, 1493, 967)['raw']
+            values = Calibration().apply(raw, rounded=True)
+            window.data_display_panel.update_nianfujiao_data(0, dict(values, raw=raw))
+            self.assertIn('2.5920', window.data_display_panel.nianfujiao_widget.total_force_label.text())
             with patch.object(window.sensor_manager, 'start_controller') as start, \
                     patch.object(ThresholdSettings, 'save'):
                 panel.update_button_states({'nianfujiao': True})

@@ -1,4 +1,4 @@
-"""独立控制线程：真实新帧 -> 标定 -> AND 阈值 -> 带样本编号的命令。
+"""独立控制线程：真实新帧 -> 联合总法向力 -> 单阈值 -> 带样本编号的命令。
 
 send_action(action, frame, B_ns) 返回驱动 PendingCommand；event_callback 只做异步记录。
 不依赖 Qt，也不从同步采集缓存/显示定时器取数。
@@ -81,7 +81,7 @@ class FootController:
         with self._lock:
             self._active = True
             self._state = 'armed'
-            self._message = '已布防，等待两组法向力同时达到阈值'
+            self._message = '已布防，等待总法向力达到阈值（压缩为正）'
             self._last_input_key = None
             self._trigger_key = None
             self._trigger_submitted_ns = None
@@ -219,7 +219,9 @@ class FootController:
         with self._lock:
             self._processed += 1
             self._last_values = {
-                'fz1_n': signal['fz1_total_cal'], 'fz2_n': signal['fz2_total_cal'],
+                'fz_total_n': signal['fz_total_cal'],
+                'fz_total_reference_n': signal['fz_total_reference_n'],
+                'normal_force_model_id': signal['normal_force_model_id'],
                 'sample_sequence': frame['sample_sequence'],
                 'controller_us': (pending.submitted_ns - input_ns) / 1000,
             }
@@ -237,8 +239,10 @@ class FootController:
                    host_received_ns=received_ns, input_received_ns=input_ns,
                    processing_started_ns=processing_started_ns, submitted_ns=pending.submitted_ns,
                    controller_us=(pending.submitted_ns - input_ns) / 1000,
-                   fz1_n=signal['fz1_total_cal'], fz2_n=signal['fz2_total_cal'],
-                   threshold_fz1_n=settings.threshold_fz1_n, threshold_fz2_n=settings.threshold_fz2_n,
+                   fz_total_n=signal['fz_total_cal'],
+                   fz_total_reference_n=signal['fz_total_reference_n'],
+                   normal_force_model_id=signal['normal_force_model_id'],
+                   threshold_total_n=settings.threshold_total_n,
                    threshold_reached=reached, is_trigger=trigger, action=action,
                    command_id=pending.command_id, state=state, settings_revision=revision,
                    calibration_id=calibration.model_id, dropped_inputs=dropped)

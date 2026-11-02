@@ -2,7 +2,7 @@
 控制面板 - 传感器控制操作
 """
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                             QPushButton, QLabel, QFormLayout, QDoubleSpinBox, QComboBox)
+                             QPushButton, QLabel, QFormLayout, QDoubleSpinBox, QComboBox, QSizePolicy)
 from PyQt5.QtCore import pyqtSignal, Qt
 
 
@@ -74,19 +74,17 @@ class ControlPanel(QWidget):
         liuzhouli_group.setLayout(liuzhouli_layout)
         layout.addWidget(liuzhouli_group)
 
-        controller_group = QGroupBox("上位机控制器：标定 → 阈值判断")
+        controller_group = QGroupBox("上位机控制器：总法向力 → 单阈值")
         controller_layout = QVBoxLayout(controller_group)
         form = QFormLayout()
-        self.threshold_fz1 = QDoubleSpinBox()
-        self.threshold_fz2 = QDoubleSpinBox()
-        for spin in (self.threshold_fz1, self.threshold_fz2):
-            spin.setDecimals(3)
-            spin.setRange(-10000, 10000)
-            spin.setSingleStep(0.1)
-            spin.setSuffix(' N')
-            spin.setValue(1.5)
-        form.addRow('Fz1 ≥', self.threshold_fz1)
-        form.addRow('Fz2 ≥', self.threshold_fz2)
+        self.threshold_total = QDoubleSpinBox()
+        self.threshold_total.setDecimals(3)
+        self.threshold_total.setRange(0, 10000)
+        self.threshold_total.setSingleStep(0.1)
+        self.threshold_total.setSuffix(' N')
+        self.threshold_total.setValue(3.0)
+        self.threshold_total.setToolTip('联合模型总法向力；压缩为正，拉伸为负，不取绝对值')
+        form.addRow('总法向力 ≥', self.threshold_total)
         self.trigger_action = QComboBox()
         self.trigger_action.addItem('低电平（LOW）', 0)
         self.trigger_action.addItem('高电平（HIGH）', 1)
@@ -94,7 +92,8 @@ class ControlPanel(QWidget):
         self.trigger_action.setToolTip('按电磁铁实际驱动电路选择触发电平；此项不改变当前引脚')
         form.addRow('触发 PA4 电平', self.trigger_action)
         controller_layout.addLayout(form)
-        rule = QLabel('两组力同时达标触发一次；未达标或触发后保持输出。')
+        rule = QLabel('总法向力达标触发一次（压缩为正）；未达标或触发后保持输出。\n'
+                      '当前采用两路联合试拟合模型，参数待独立验证。')
         rule.setWordWrap(True)
         controller_layout.addWidget(rule)
         self.controller_applied_label = QLabel()
@@ -122,8 +121,9 @@ class ControlPanel(QWidget):
         self.controller_status_label = QLabel('未启动')
         self.controller_status_label.setWordWrap(True)
         controller_layout.addWidget(self.controller_status_label)
-        self.controller_values_label = QLabel('控制输入 Fz1 / Fz2：-- / -- N')
+        self.controller_values_label = QLabel('控制输入总法向力（压缩为正）：-- N')
         self.controller_values_label.setWordWrap(True)
+        self.controller_values_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         controller_layout.addWidget(self.controller_values_label)
         layout.addWidget(controller_group)
         
@@ -166,30 +166,28 @@ class ControlPanel(QWidget):
         self.liuzhouli_zero_btn.setEnabled(liuzhouli_connected)
 
     def controller_settings(self):
-        return {'threshold_fz1_n': self.threshold_fz1.value(),
-                'threshold_fz2_n': self.threshold_fz2.value(),
+        return {'threshold_total_n': self.threshold_total.value(),
                 'trigger_action': self.trigger_action.currentData()}
 
     def set_controller_settings(self, settings):
-        self.threshold_fz1.setValue(settings['threshold_fz1_n'])
-        self.threshold_fz2.setValue(settings['threshold_fz2_n'])
+        self.threshold_total.setValue(settings['threshold_total_n'])
         self.trigger_action.setCurrentIndex(self.trigger_action.findData(settings['trigger_action']))
 
     def update_controller_status(self, status):
         settings = status['settings']
         self.controller_applied_label.setText(
-            f"已应用：Fz1 ≥ {settings['threshold_fz1_n']:g} N，"
-            f"Fz2 ≥ {settings['threshold_fz2_n']:g} N，"
+            f"已应用：总法向力 ≥ {settings['threshold_total_n']:g} N（压缩为正），"
             f"PA4 {'HIGH' if settings['trigger_action'] else 'LOW'}")
         self.controller_stop_btn.setEnabled(status['active'])
         self.controller_status_label.setText(status['message'])
         self.controller_status_label.setStyleSheet(
             'color: #b22222;' if status['state'] == 'error' else
             'color: #176b35;' if status['active'] else 'color: #555;')
-        if 'fz1_n' in status:
+        if 'fz_total_n' in status:
             self.controller_values_label.setText(
-                f"控制输入 Fz1 / Fz2：{status['fz1_n']:.4f} / {status['fz2_n']:.4f} N\n"
+                f"控制输入总法向力：{status['fz_total_n']:.4f} N（压缩为正）\n"
+                f"六轴符号参考：{status['fz_total_reference_n']:.4f} N\n"
                 f"帧 {status['sample_sequence']}；处理 {status['controller_us']:.1f} μs；"
                 f"丢弃输入 {status['dropped_inputs']}")
         else:
-            self.controller_values_label.setText('控制输入 Fz1 / Fz2：-- / -- N')
+            self.controller_values_label.setText('控制输入总法向力（压缩为正）：-- N')

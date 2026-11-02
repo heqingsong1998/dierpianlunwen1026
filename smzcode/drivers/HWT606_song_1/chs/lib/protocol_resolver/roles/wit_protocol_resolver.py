@@ -14,6 +14,28 @@ class WitProtocolResolver(IProtocolResolver):
     angleRange = 180.0   # 角度量程
     TempFindValues=[]    # 读取指定寄存器返回的数据
 
+    def __init__(self):
+        self.TempBytes = []
+        self.TempFindValues = []
+        self._fresh = set()
+        self._sample_sequence = 0
+
+    def _publish_imu_sample(self, deviceModel):
+        self._sample_sequence += 1
+        names = ('accX','accY','accZ','gyroX','gyroY','gyroZ',
+                 'angleX','angleY','angleZ','temperature')
+        fields = ('acc_x','acc_y','acc_z','gyro_x','gyro_y','gyro_z',
+                  'angle_x','angle_y','angle_z','temperature')
+        snapshot = {field: deviceModel.getDeviceData(name) for field, name in zip(fields,names)}
+        snapshot.update(sample_sequence=self._sample_sequence,
+                        host_received_ns=time.perf_counter_ns(),
+                        timestamp_ms=time.time_ns()//1_000_000,
+                        frame_complete={0x51,0x52} <= self._fresh,
+                        chip_time_ms=deviceModel.getDeviceData('chip_time_ms') if 0x50 in self._fresh else None)
+        deviceModel.imu_sample = snapshot
+        self._fresh.clear()
+        deviceModel.dataProcessor.onUpdate(deviceModel)
+
     def setConfig(self, deviceModel):
         pass
 
@@ -42,13 +64,18 @@ class WitProtocolResolver(IProtocolResolver):
                     CheckSum+=self.TempBytes[i]
                 if (CheckSum&0xff==self.TempBytes[self.PackSize-1]):  #校验和通过
                     if (self.TempBytes[1] == 0x50):                   #芯片时间包
+                        self._fresh.clear()  # 每个 TIME 包开启一个新输出周期。
                         self.get_chiptime(self.TempBytes, deviceModel) #结算芯片时间数据
+                        self._fresh.add(0x50)
                     elif (self.TempBytes[1]==0x51):                    #加速度包
                         self.get_acc(self.TempBytes,deviceModel)       #结算加速度数据
+                        self._fresh.add(0x51)
                     elif(self.TempBytes[1]==0x52):                    #角速度包
                         self.get_gyro(self.TempBytes,deviceModel)     #结算角速度数据
+                        self._fresh.add(0x52)
                     elif(self.TempBytes[1]==0x53):                    #角度包
                         self.get_angle(self.TempBytes,deviceModel)    #结算角度数据
+                        self._publish_imu_sample(deviceModel)
                     elif(self.TempBytes[1]==0x54):                    #磁场包
                         self.get_mag(self.TempBytes, deviceModel)     #结算磁场数据
                         deviceModel.dataProcessor.onUpdate(deviceModel) #触发数据更新事件
@@ -109,9 +136,10 @@ class WitProtocolResolver(IProtocolResolver):
         if acc_z >= self.accRange:
             acc_z -= 2 * self.accRange
 
-        deviceModel.setDeviceData("accX", round(acc_x, 4))     # 设备模型加速度X赋值
-        deviceModel.setDeviceData("accY", round(acc_y, 4))     # 设备模型加速度Y赋值
-        deviceModel.setDeviceData("accZ", round(acc_z, 4))     # 设备模型加速度Z赋值
+        # 积分使用协议换算的完整精度；四舍五入只在界面显示时进行。
+        deviceModel.setDeviceData("accX", acc_x)
+        deviceModel.setDeviceData("accY", acc_y)
+        deviceModel.setDeviceData("accZ", acc_z)
         temperature = round(tempVal / 100.0, 2)                                           # 温度结算,并保留两位小数
         deviceModel.setDeviceData("temperature", temperature)                             # 设备模型温度赋值
 
@@ -167,9 +195,9 @@ class WitProtocolResolver(IProtocolResolver):
         if angle_z >= self.angleRange:
             angle_z -= 2 * self.angleRange
 
-        deviceModel.setDeviceData("angleX", round(angle_x, 3))  # 设备模型角度X赋值
-        deviceModel.setDeviceData("angleY", round(angle_y, 3))  # 设备模型角度Y赋值
-        deviceModel.setDeviceData("angleZ", round(angle_z, 3))  # 设备模型角度Z赋值
+        deviceModel.setDeviceData("angleX", angle_x)
+        deviceModel.setDeviceData("angleY", angle_y)
+        deviceModel.setDeviceData("angleZ", angle_z)
 
     def get_mag(self,datahex, deviceModel):
         """
@@ -254,6 +282,9 @@ class WitProtocolResolver(IProtocolResolver):
         _minute = (tempVals[2] & 0xff)           # 分
         _second = ((tempVals[2] >> 8) & 0xff)    # 秒
         _millisecond = tempVals[3]               # 毫秒
+        valid = 0 <= _hour < 24 and 0 <= _minute < 60 and 0 <= _second < 60 and 0 <= _millisecond < 1000
+        deviceModel.setDeviceData('chip_time_ms',
+                                  ((_hour*60+_minute)*60+_second)*1000+_millisecond if valid else None)
         deviceModel.setDeviceData("Chiptime",
                                   str(_year) + "-" + str(_moth) + "-" + str(_day) + " " + str(_hour) + ":" + str(
                                       _minute) + ":" + str(_second) + "." + str(_millisecond))  # 设备模型芯片时间赋值

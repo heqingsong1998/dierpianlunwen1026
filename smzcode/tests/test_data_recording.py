@@ -1,4 +1,4 @@
-"""31 列足端 CSV，以及保存端 0x123/0x124 基准版本配对。无需实物。"""
+"""34 列足端 CSV、联合总法向力，以及保存端基准版本配对。无需实物。"""
 import csv
 import os
 from pathlib import Path
@@ -27,6 +27,7 @@ EXPECTED_COLUMNS = [
     'Fx1_cal', 'Fy1_cal', 'Fz1_cal', 'Mx1_cal', 'My1_cal',
     'Fx2_cal', 'Fy2_cal', 'Fz2_cal', 'Mx2_cal', 'My2_cal',
     'sample_sequence', 'ready_us', 'host_received_ns', 'baseline_generation', 'pin_state',
+    'Fz_total_cal', 'Fz_total_ref_cal', 'normal_force_model_id',
 ]
 
 
@@ -57,7 +58,7 @@ def read_rows(path):
         if reader.fieldnames != EXPECTED_COLUMNS:
             raise AssertionError(reader.fieldnames)
         if any(None in row or any(value is None for value in row.values()) for row in rows):
-            raise AssertionError('数据行长度与 31 列表头不一致')
+            raise AssertionError('数据行长度与 34 列表头不一致')
         return rows
 
 
@@ -76,7 +77,7 @@ class RecorderTests(unittest.TestCase):
     def rows(self, kind):
         return read_rows(Path(self.recorder.session_dir) / f'nianfujiao_{kind}.csv')
 
-    def test_both_files_export_31_columns_raw_channels_moments_and_full_signed_fz(self):
+    def test_both_files_export_34_columns_including_joint_total_and_model(self):
         data = sample()
         data['baseline_generation'] = 0  # 版本 0 是有效版本，不能当作未知值。
         self.recorder.write_nianfujiao_data(0, data)
@@ -86,7 +87,10 @@ class RecorderTests(unittest.TestCase):
             rows = self.rows(kind)
             self.assertEqual(len(rows), 1)
             row = rows[0]
-            self.assertEqual(len(row), 31)
+            self.assertEqual(len(row), 34)
+            self.assertAlmostEqual(float(row['Fz_total_cal']), data['fz_total_cal'])
+            self.assertAlmostEqual(float(row['Fz_total_ref_cal']), -data['fz_total_cal'])
+            self.assertEqual(row['normal_force_model_id'], data['normal_force_model_id'])
             for name, expected in zip(EXPECTED_COLUMNS[2:16], data['raw'][:14]):
                 self.assertEqual(int(row[name]), expected)
             self.assertEqual(float(row['Fz1_cal']), 1.6476)

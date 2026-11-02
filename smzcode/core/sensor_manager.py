@@ -24,6 +24,7 @@ from drivers.nianfujiao_song import NianFuJiaoDevice
 from drivers.sensors.utils import create_sensor, initialize_sensor
 from controller.algorithms.calibration import raw_from_sample
 from controller.worker import FootController
+from core.imu_velocity import ImuVelocityEstimator, VelocitySettings
 
 
 from drivers.HWT606_song_1.chs.utils import write_device_config as write_cfg_1
@@ -104,6 +105,7 @@ class SensorManager(QObject):
 
         self.record_callback_hwt606_1 = None
         self.record_callback_hwt606_2 = None
+        self.imu1_velocity = ImuVelocityEstimator()
         self.record_callback_nianfujiao = None
         self.record_callback_liuzhouli = None
         self.record_callback_nianfujiao_aux = None
@@ -178,8 +180,7 @@ class SensorManager(QObject):
             return
 
         # 没有任何需要统一采集的传感器则不启动
-        if not (self.connection_status['hwt606_1'] or
-                self.connection_status['hwt606_2'] or
+        if not (self.connection_status['hwt606_2'] or
                 self.connection_status['liuzhouli'] or
                 self.connection_status['nianfujiao']):
             return
@@ -198,8 +199,7 @@ class SensorManager(QObject):
 
     def _maybe_stop_unified_thread(self):
         """当所有需要统一采集的传感器都断开时，停止统一采集线程"""
-        if (self.connection_status['hwt606_1'] or
-                self.connection_status['hwt606_2'] or
+        if (self.connection_status['hwt606_2'] or
                 self.connection_status['liuzhouli'] or
                 self.connection_status['nianfujiao']):
             return
@@ -311,21 +311,6 @@ class SensorManager(QObject):
                         print(f"[ERROR] 统一线程 六轴力写入失败: {e}")
                         traceback.print_exc()
 
-                    # -------- HWT606-1：在同一 now_ms 下抓取一次 --------
-                    try:
-                        if self.hwt606_1 and self.connection_status['hwt606_1']:
-                            data1 = self._get_hwt606_data(self.hwt606_1)
-                            data1['timestamp_ms'] = now_ms
-                            # ★ 计算速度并写回 data1
-                            self._update_hwt606_velocity('hwt606_1', data1)
-                            self.latest_data['hwt606_1'] = data1
-
-                            if self.record_callback_hwt606_1:
-                                self.record_callback_hwt606_1('hwt606_1', data1)
-                    except Exception as e:
-                        print(f"[ERROR] 统一线程 HWT606-1 采集失败: {e}")
-                        traceback.print_exc()
-
                     # -------- HWT606-2：在同一 now_ms 下抓取一次 --------
                     try:
                         if self.hwt606_2 and self.connection_status['hwt606_2']:
@@ -397,41 +382,54 @@ class SensorManager(QObject):
     def connect_hwt606_1(self) -> bool:
         """连接 HWT606-1 传感器"""
         try:
+            if self.hwt606_1 and self.connection_status['hwt606_1']:
+                return True
             config = self.config['sensor']['hwt606_1']
+            cfg = config.get('write_config1', {})
+            rate = int(cfg.get('rate', 9))
+            periods = {1:5000.,2:2000.,3:1000.,4:500.,5:200.,6:100.,7:50.,8:20.,9:10.,11:5.}
+            if rate not in periods:
+                raise ValueError('IMU1 输出频率寄存器不支持，请使用 9（100Hz）或 11（200Hz）等有效值')
+            self.imu1_velocity = ImuVelocityEstimator(VelocitySettings(
+                period_ms=periods[rate], **config.get('velocity', {})))
+            self.latest_data['hwt606_1'] = None
             print("[DEBUG] 创建 HWT606-1 实例，使用库1 (JY901SDevice1)")
             self.hwt606_1 = JY901SDevice1(
                 name=config.get('name', 'HWT606-1'),
                 port=config['port'],
                 baud=config['baud'],
             )
+            sensor = self.hwt606_1
+            sensor.register_callback(lambda model: self._on_imu1_sample(sensor, model))
             print(f"[DEBUG] HWT606-1 实例创建成功: device={id(self.hwt606_1.device)}, "
                   f"deviceData={id(self.hwt606_1.device.deviceData)}")
             
             self.hwt606_1.open()
-            cfg = config.get("write_config1", {})
-            try:
-                write_cfg_1(self.hwt606_1.device,
-                rate=cfg.get('rate', 11),
+            write_cfg_1(self.hwt606_1.device,
+                rate=rate,
                 direction_h_v=cfg.get('direction_h_v', 0),
-                direction_axis=cfg.get('direction_axis', 0))
-            except Exception as e:
-                print(f"[WARN] HWT606-1 写配置失败: {e}")
+                direction_axis=cfg.get('direction_axis', 0),
+                output_content=0x000F)  # TIME/ACC/GYRO/ANGLE，每周期一次快照。
             
             self.connection_status['hwt606_1'] = True
             self.connection_status_changed.emit('hwt606_1', True)
 
-            self._ensure_unified_thread_started()
-
             if not self.display_timer.isActive():
                 self.display_timer.start()
 
-            print(f"[INFO] HWT606-1 已连接: {config['port']}，由统一采集线程接管采集")
+            print(f"[INFO] IMU1 已连接: {config['port']}，逐帧记录；请静止后进行速度归零")
             return True
 
         except Exception as e:
             error_msg = f"连接失败: {str(e)}"
             print(f"[ERROR] HWT606-1 {error_msg}")
             self.connection_status['hwt606_1'] = False
+            if self.hwt606_1 is not None:
+                try:
+                    self.hwt606_1.close()
+                except Exception:
+                    pass
+                self.hwt606_1 = None
             self.connection_status_changed.emit('hwt606_1', False)
             self.error_occurred.emit('hwt606_1', error_msg)
             return False
@@ -449,10 +447,38 @@ class SensorManager(QObject):
             print(f"[WARN] HWT606-1 关闭失败: {e}")
 
         self.hwt606_1 = None
+        self.latest_data['hwt606_1'] = None
         self.connection_status_changed.emit('hwt606_1', False)
         print("[INFO] HWT606-1 已断开")
 
         self._maybe_stop_unified_thread()
+
+    def _on_imu1_sample(self, sensor, model):
+        """串口解析线程的逐周期快照；不依赖六轴，不从 GUI 刷新中写入。"""
+        if self.hwt606_1 is not sensor or not self.connection_status['hwt606_1']:
+            return
+        sample = getattr(model, 'imu_sample', None)
+        if sample is None:
+            return
+        data = self.imu1_velocity.update(sample)
+        if data is None:
+            return
+        self.latest_data['hwt606_1'] = data
+        if self.record_callback_hwt606_1:
+            self.record_callback_hwt606_1('hwt606_1', data)
+
+    def zero_imu1_velocity(self):
+        if not self.connection_status['hwt606_1']:
+            raise ValueError('请先连接 IMU1')
+        self.imu1_velocity.request_zero()
+        if self.latest_data['hwt606_1'] is not None:
+            self.latest_data['hwt606_1'] = dict(self.latest_data['hwt606_1'],
+                velocity_valid=False, velocity_status='calibrating', calibration_progress=0.)
+
+    def imu1_snapshot(self):
+        return {'connection': dict(self.config['sensor']['hwt606_1']),
+                'connected': self.connection_status['hwt606_1'],
+                'estimator': self.imu1_velocity.snapshot()}
 
     # -------- HWT606-2 --------
 
@@ -751,7 +777,13 @@ class SensorManager(QObject):
     def _update_display(self):
         """更新显示（10Hz，在主线程中执行）"""
         if self.latest_data['hwt606_1']:
-            self.hwt606_1_data_updated.emit(self.latest_data['hwt606_1'])
+            import time
+            data = dict(self.latest_data['hwt606_1'])
+            if time.perf_counter_ns()-data['host_received_ns'] > 500_000_000:
+                data.update(velocity_valid=False, velocity_status='stale')
+            if self.hwt606_1 and not self.hwt606_1.device.isOpen:
+                data.update(velocity_valid=False, velocity_status='stale')
+            self.hwt606_1_data_updated.emit(data)
 
         if self.latest_data['hwt606_2']:
             self.hwt606_2_data_updated.emit(self.latest_data['hwt606_2'])
@@ -778,8 +810,9 @@ class SensorManager(QObject):
         device = self.nianfujiao
         enable_cal = getattr(device, "enable_calibration", False)
 
+        result = self.controller.calibration.apply(raw_values, rounded=True)
         if enable_cal:
-            calibrated_values = self.controller.calibration.apply(raw_values, rounded=True)['calibrated']
+            calibrated_values = result['calibrated']
         else:
             calibrated_values = [0.0] * 24
         # ★ 计算两个 Fz 合力（标定值）
@@ -792,6 +825,10 @@ class SensorManager(QObject):
             'calibrated': calibrated_values,
             'fz1_total_cal': fz1_total_cal,  # Fz1+_cal + FZ1-_cal
             'fz2_total_cal': fz2_total_cal,  # Fz2+_cal + FZ2-_cal
+            # 联合总法向力不受旧分量表格的显示开关影响，与控制器使用同一模型。
+            'fz_total_cal': result['fz_total_cal'],
+            'fz_total_reference_n': result['fz_total_reference_n'],
+            'normal_force_model_id': result['normal_force_model_id'],
             'sample_sequence': data.sample_sequence,
             'ready_us': data.ready_us,
             'host_received_ns': data.host_received_ns,

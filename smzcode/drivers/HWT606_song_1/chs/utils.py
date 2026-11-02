@@ -143,7 +143,7 @@ def read_device_config(device) -> dict:
     return config
 
 def write_device_config(device, rate: int = 11, direction_h_v: int = 0, 
-                        direction_axis: int = 0):
+                        direction_axis: int = 0, output_content=None):
     """
     写入设备配置
     
@@ -155,6 +155,10 @@ def write_device_config(device, rate: int = 11, direction_h_v: int = 0,
     """
     device.unlock()
     time.sleep(0.1)
+
+    if output_content is not None:
+        device.writeReg(0x02, output_content)
+        time.sleep(0.1)
     
     device.writeReg(0x03, rate)
     time.sleep(0.1)

@@ -50,6 +50,7 @@ class DeviceModel:
         self.protocolResolver = protocolResolver
         self.dataProcessor = dataProcessor
         self.dataUpdateListener = dataUpdateListener
+        self._read_thread = None
         # _thread.start_new_thread(self.readDataTh, ("Data-Received-Thread", 10, ))
 
     def setDeviceData(self, key, value):
@@ -98,8 +99,11 @@ class DeviceModel:
                         if read_count <= 5:
                             print(f"[DEBUG-READ1] 读取到 {tlen} 字节数据，前10字节: {data[:10].hex() if len(data)>=10 else data.hex()}")
                         self.onDataReceived(data)
+                    else:
+                        time.sleep(0.001)
                 except Exception as ex:
                     print(f"[ERROR-READ1] 读取异常: {ex}")
+                    self.isOpen = False
             else:
                 time.sleep(0.1)
                 print("暂停")
@@ -116,20 +120,27 @@ class DeviceModel:
         try:
             self.serialPort = serial.Serial(self.serialConfig.portName, self.serialConfig.baud, timeout=0.5)
             self.isOpen = True
-            t = threading.Thread(target=self.readDataTh, args=("Data-Received-Thread",10,))          # 开启一个线程接收数据
-            t.start()
+            self._read_thread = threading.Thread(target=self.readDataTh,
+                args=("IMU1-Data-Received-Thread",10,), daemon=True)
+            self._read_thread.start()
         except SerialException:
-            print("打开" + self.serialConfig.portName + self.serialConfig.baud + "失败")
+            self.isOpen = False
+            raise
 
     def closeDevice(self):
         """
         关闭设备
         :return: 无返回
         """
+        self.isOpen = False
+        thread = getattr(self, '_read_thread', None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.)
+        self._read_thread = None
         if self.serialPort is not None:
             self.serialPort.close()
+            self.serialPort = None
             print("端口关闭了")
-        self.isOpen = False
         print("设备关闭了")
 
     def onDataReceived(self, data):

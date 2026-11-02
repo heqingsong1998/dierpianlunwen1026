@@ -2,7 +2,7 @@
 连接管理面板 - 管理四个传感器的连接
 """
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                             QPushButton, QLabel, QGridLayout)
+                             QPushButton, QLabel, QGridLayout, QComboBox)
 from PyQt5.QtCore import pyqtSignal, Qt
 
 import sys
@@ -65,11 +65,31 @@ class SensorConnectionWidget(QWidget):
         protocol_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(protocol_label)
 
-        endpoint_label = QLabel(f"目标: {self.endpoint}")
-        endpoint_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(endpoint_label)
-
-        if self.baud is not None:
+        if self.sensor_id == 'hwt606_1':
+            self.port_combo = QComboBox()
+            self.port_combo.setEditable(True)
+            self.port_combo.addItem(self.endpoint)
+            self.refresh_button = QPushButton('刷新端口')
+            self.refresh_button.clicked.connect(self._refresh_ports)
+            row = QHBoxLayout()
+            row.addWidget(QLabel('串口')); row.addWidget(self.port_combo, 1)
+            row.addWidget(self.refresh_button); layout.addLayout(row)
+            self.baud_combo = QComboBox()
+            for baud in (9600,115200,230400,460800,921600):
+                self.baud_combo.addItem(str(baud))
+            self.baud_combo.setCurrentText(str(self.baud))
+            row = QHBoxLayout()
+            row.addWidget(QLabel('波特率')); row.addWidget(self.baud_combo, 1)
+            layout.addLayout(row)
+            self.clock_combo = QComboBox()
+            self.clock_combo.addItem('积分时间：芯片时间', 'chip')
+            self.clock_combo.addItem('积分时间：按输出周期估计', 'nominal')
+            layout.addWidget(self.clock_combo)
+        else:
+            endpoint_label = QLabel(f"目标: {self.endpoint}")
+            endpoint_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(endpoint_label)
+        if self.baud is not None and self.sensor_id != 'hwt606_1':
             baud_label = QLabel(f"波特率: {self.baud}")
             baud_label.setAlignment(Qt.AlignCenter)
             layout.addWidget(baud_label)
@@ -105,6 +125,9 @@ class SensorConnectionWidget(QWidget):
     def set_connected(self, connected: bool):
         """设置连接状态"""
         self.is_connected = connected
+        if self.sensor_id == 'hwt606_1':
+            for widget in (self.port_combo,self.baud_combo,self.refresh_button,self.clock_combo):
+                widget.setEnabled(not connected)
         
         if connected:
             self.connect_btn.setText("断开")
@@ -115,9 +138,20 @@ class SensorConnectionWidget(QWidget):
     
     def set_error(self):
         """设置错误状态"""
+        self.set_connected(False)
         self.status_indicator.set_error()
-        self.is_connected = False
-        self.connect_btn.setText("连接")
+
+    def _refresh_ports(self):
+        from serial.tools.list_ports import comports
+        current = self.port_combo.currentText()
+        self.port_combo.clear()
+        self.port_combo.addItems(sorted({port.device for port in comports()} | {current}))
+        self.port_combo.setCurrentText(current)
+
+    def connection_options(self):
+        return {'port': self.port_combo.currentText().strip(),
+                'baud': int(self.baud_combo.currentText()),
+                'time_source': self.clock_combo.currentData()}
     
     def set_busy(self):
         """设置忙碌状态"""
@@ -203,6 +237,16 @@ class ConnectionPanel(QWidget):
         liuzhouli_widget.disconnect_clicked.connect(self.disconnect_sensor.emit)
         self.sensor_widgets['liuzhouli'] = liuzhouli_widget
         sensors_layout.addWidget(liuzhouli_widget, 0, 1)
+
+        imu_config = self.config['sensor']['hwt606_1']
+        imu_widget = SensorConnectionWidget('hwt606_1', 'IMU1 · HWT606',
+            endpoint=imu_config['port'], baud=imu_config['baud'])
+        imu_widget.clock_combo.setCurrentIndex(
+            1 if imu_config.get('velocity', {}).get('time_source') == 'nominal' else 0)
+        imu_widget.connect_clicked.connect(self.connect_sensor.emit)
+        imu_widget.disconnect_clicked.connect(self.disconnect_sensor.emit)
+        self.sensor_widgets['hwt606_1'] = imu_widget
+        sensors_layout.addWidget(imu_widget, 1, 0, 1, 2)
         
         layout.addLayout(sensors_layout)
         

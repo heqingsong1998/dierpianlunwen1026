@@ -15,6 +15,7 @@ class RecordingPanel(QWidget):
     start_recording = pyqtSignal()   # 开始采集
     stop_recording = pyqtSignal()    # 停止采集
     open_folder = pyqtSignal(str)    # 打开文件夹 (folder_path)
+    offline_requested = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,6 +89,11 @@ class RecordingPanel(QWidget):
         button_layout.addWidget(self.folder_btn)
         
         layout.addLayout(button_layout)
+
+        self.offline_button = QPushButton('离线分析：时间轴重建／总力标定')
+        self.offline_button.setToolTip('完成采集后，选择会话重建时间轴或重新求联合标定系数')
+        self.offline_button.clicked.connect(self.offline_requested.emit)
+        layout.addWidget(self.offline_button)
         
         # 状态信息区域
         status_group = QGroupBox("采集状态")
@@ -209,7 +215,7 @@ class RecordingPanel(QWidget):
             counts: 数据条数字典 {'hwt606_1': 100, 'hwt606_2': 98, ...}
         """
         text = (f"粘附脚: {counts.get('nianfujiao', 0)} | "
-                f"六轴力: {counts.get('liuzhouli', 0)}")
+                f"六轴力: {counts.get('liuzhouli', 0)} | IMU1: {counts.get('hwt606_1', 0)}")
         self.count_label.setText(text)
     
     def update_storage_path(self, path: str):
