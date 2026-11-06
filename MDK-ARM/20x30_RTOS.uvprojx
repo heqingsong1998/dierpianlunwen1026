@@ -409,6 +409,11 @@
               <FilePath>../Core/Src/app_freertos.c</FilePath>
             </File>
             <File>
+              <FileName>foot_controller.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/foot_controller.c</FilePath>
+            </File>
+            <File>
               <FileName>fdcan.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/fdcan.c</FilePath>

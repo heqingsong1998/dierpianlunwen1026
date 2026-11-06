@@ -10,7 +10,8 @@ UINT32_MASK = 0xFFFFFFFF
 DATA_ID = 0x123
 STAGE_PAIR_ID = 0x124
 ACK_ID = 0x125
-PAYLOAD_LENGTHS = {DATA_ID: 48, STAGE_PAIR_ID: 32, ACK_ID: 32}
+BOARD_ID = 0x126
+PAYLOAD_LENGTHS = {DATA_ID: 48, STAGE_PAIR_ID: 32, ACK_ID: 32, BOARD_ID: 48}
 COMMAND_PREFIX = bytes.fromhex("5A 08 04 00 00 FF FE")
 TIMING_VALID = 0x0001
 GPIO_WRITTEN = 0x0002
@@ -18,6 +19,31 @@ ZERO_PENDING = 0x0004
 LEGACY = 0x0008
 GPIO_CHANGED = 0x0010
 ACTION_LOW, ACTION_HIGH, ACTION_HOLD, ACTION_ZERO = range(4)
+BOARD_DISARM, BOARD_BEGIN, BOARD_CAL_A, BOARD_CAL_B, BOARD_CAL_C, BOARD_THRESHOLD, BOARD_COMMIT, BOARD_ARM = range(16, 24)
+
+BOARD_FIELDS = (
+    "protocol_version", "strategy", "state", "pin_state", "baseline_generation",
+    "config_revision", "sample_sequence", "ready_us", "trigger_sequence",
+    "trigger_ready_us", "trigger_gpio_us", "force_n", "crossing_ms", "threshold_n",
+    "compute_us", "model_tag",
+)
+
+
+def decode_board_status(payload):
+    data = dict(zip(BOARD_FIELDS, struct.unpack("<4B2H5I3f2I", payload)))
+    data["trigger_latency_us"] = (
+        (data["trigger_gpio_us"] - data["trigger_ready_us"]) & UINT32_MASK
+        if data["trigger_sequence"] else None
+    )
+    return data
+
+
+def build_board_command(action, command_id, value=0):
+    if action not in range(BOARD_DISARM, BOARD_ARM + 1) or not 1 <= command_id <= 0xFFFF:
+        raise ValueError("板端命令或编号无效")
+    encoded = (struct.pack("<f", value) if BOARD_CAL_A <= action <= BOARD_THRESHOLD
+               else struct.pack("<I", value))
+    return COMMAND_PREFIX + struct.pack("<BBH", 0xC2, action, command_id) + encoded + b"\xa5"
 
 
 class FrameParser:

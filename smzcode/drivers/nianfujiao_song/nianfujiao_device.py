@@ -14,8 +14,8 @@ import serial
 from .base import NianFuJiaoBase, Style0Data
 from .protocol import (
     FrameParser, StagePairData, CommandAck, PendingCommand,
-    DATA_ID, STAGE_PAIR_ID, ACK_ID, PROTOCOL_VERSION,
-    build_command_frame, match_feedback,
+    DATA_ID, STAGE_PAIR_ID, ACK_ID, BOARD_ID, BOARD_DISARM, PROTOCOL_VERSION,
+    build_board_command, build_command_frame, decode_board_status, match_feedback,
 )
 from .utils import (
     CsvWriter,
@@ -68,6 +68,9 @@ class NianFuJiaoDevice(NianFuJiaoBase):
         self._write_lock = threading.RLock()
         self._pending_lock = threading.Lock()
         self._pending_commands = OrderedDict()
+        self._board_condition = threading.Condition()
+        self._board_wait_key = None
+        self._board_ack = None
         self._command_id = 0
 
         # 读取线程
@@ -183,10 +186,21 @@ class NianFuJiaoDevice(NianFuJiaoBase):
                 self._notify_callbacks('stage_pairs', pairs.to_dict())
             elif can_id == ACK_ID:
                 ack = CommandAck.decode(payload, received_ns, wall_ms)
+                if ack.action >= BOARD_DISARM:
+                    with self._board_condition:
+                        if self._board_wait_key == (ack.command_id, ack.action):
+                            self._board_ack = ack
+                            self._board_condition.notify_all()
+                    continue
                 with self._pending_lock:
                     pending = self._pending_commands.pop(
                         (ack.command_id, ack.sample_sequence), None)
                 self._notify_callbacks('command_ack', match_feedback(ack, pending))
+            elif can_id == BOARD_ID:
+                status = decode_board_status(payload)
+                if status['protocol_version'] == PROTOCOL_VERSION:
+                    status.update(host_received_ns=received_ns, sensor_ts_ms=wall_ms)
+                    self._notify_callbacks('board_status', status)
 
     def _handle_style0(self, payload, received_ns, wall_ms):
         """保留原通道视图，测时字段按无符号 uint32 单独解释。"""
@@ -295,6 +309,28 @@ class NianFuJiaoDevice(NianFuJiaoBase):
         if input_received_ns <= 0 or input_received_ns > time.perf_counter_ns():
             raise ValueError('输入时间必须来自电脑当前 perf_counter_ns 时间轴')
         return self._send_new_action(action, sample_sequence, ready_us, input_received_ns)
+
+    def request_board(self, action, value=0):
+        with self._write_lock:
+            if not self.serial_conn or not self.serial_conn.is_open:
+                raise OSError("黏附脚串口未连接")
+            self._command_id = self._command_id % 0xFFFF + 1
+            frame = build_board_command(action, self._command_id, value)
+            with self._board_condition:
+                self._board_wait_key = (self._command_id, action)
+                self._board_ack = None
+            try:
+                if self.serial_conn.write(frame) != len(frame):
+                    raise OSError("板端命令未完整写入")
+                self.serial_conn.flush()
+                with self._board_condition:
+                    if not self._board_condition.wait_for(lambda: self._board_ack is not None, 0.6):
+                        raise OSError("等待 STM32 确认超时，请检查板端状态")
+                    return self._board_ack
+            finally:
+                with self._board_condition:
+                    self._board_wait_key = None
+                    self._board_ack = None
 
     def _send_new_action(self, action, sample_sequence=0, ready_us=None,
                          input_received_ns=None):

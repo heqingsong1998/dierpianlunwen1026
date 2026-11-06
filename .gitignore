@@ -19,6 +19,7 @@ htmlcov/
 # Experiment recordings and runtime logs
 /data/
 /smzcode/data/
+/smzcode/training/trained_models/
 *.log
 
 # Keil output and per-computer debugger state (keep vendor .a/.lib libraries)

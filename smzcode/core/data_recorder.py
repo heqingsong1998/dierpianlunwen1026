@@ -11,6 +11,8 @@ import queue
 import json
 from collections import OrderedDict, deque
 
+from drivers.nianfujiao_song.protocol import BOARD_FIELDS
+
 FOOT_RAW_COLUMNS = [
     'Fx1_raw', 'Fy1_raw', 'Fz1_raw', 'Mx1_raw', 'My1_raw', 'JJJ1_1_raw', 'JJJ1_2_raw',
     'Fx2_raw', 'Fy2_raw', 'Fz2_raw', 'Mx2_raw', 'My2_raw', 'JJJ2_1_raw', 'JJJ2_2_raw',
@@ -27,6 +29,7 @@ FOOT_CSV_COLUMNS = ['timestamp', 'timestamp_ms', *FOOT_RAW_COLUMNS,
                     'Fz_total_cal', 'Fz_total_ref_cal', 'normal_force_model_id']
 FOOT_BASELINE_INDEX = FOOT_CSV_COLUMNS.index('baseline_generation')
 PROTOCOL_COLUMNS = {
+    'board': ['sensor_ts_ms', 'host_received_ns', *BOARD_FIELDS, 'trigger_latency_us'],
     'controller': ['sensor_ts_ms', 'event', 'event_ns', 'sample_sequence', 'ready_us',
                    'host_received_ns', 'input_received_ns', 'processing_started_ns',
                    'submitted_ns', 'controller_us', 'fz_total_n', 'fz_total_reference_n',

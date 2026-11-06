@@ -226,13 +226,23 @@ class MainWindow(QMainWindow):
         self._offline_workbench.raise_()
         self._offline_workbench.activateWindow()
 
-    def _on_controller_apply(self, values):
+    def _on_controller_apply(self, values, arm=False):
         try:
             settings = ThresholdSettings(**values)
             settings.save()
             self.sensor_manager.controller.configure(settings)
+            if arm:
+                self.sensor_manager.start_controller()
+            elif self.sensor_manager.connection_status['nianfujiao']:
+                self.sensor_manager.apply_controller()
             self.control_panel.update_controller_status(self.sensor_manager.controller.snapshot())
-            self.statusBar().showMessage('控制参数已保存；新进入队列的帧使用新参数')
+            if arm:
+                message = 'STM32 已确认布防'
+            elif self.sensor_manager.connection_status['nianfujiao']:
+                message = 'STM32 已确认参数，当前撤防'
+            else:
+                message = '参数已保存，连接 STM32 后应用'
+            self.statusBar().showMessage(message)
             return True
         except Exception as exc:
             QMessageBox.warning(self, '控制参数', str(exc))
@@ -242,13 +252,7 @@ class MainWindow(QMainWindow):
         if self._offline_workbench is not None and self._offline_workbench.busy:
             QMessageBox.information(self, '离线分析进行中', '请等待离线分析完成后再启动控制器。')
             return
-        if not self._on_controller_apply(values):
-            return
-        try:
-            self.sensor_manager.start_controller()
-            self.control_panel.update_controller_status(self.sensor_manager.controller.snapshot())
-        except Exception as exc:
-            QMessageBox.warning(self, '控制器未启动', str(exc))
+        self._on_controller_apply(values, arm=True)
 
     def _on_controller_stop(self):
         try:
@@ -534,7 +538,6 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             
-            self.sensor_manager.controller.stop('窗口关闭，控制器已停止')
             # 停止采集
             self.data_recorder.stop_recording()
         

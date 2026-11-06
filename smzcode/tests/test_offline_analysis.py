@@ -175,7 +175,7 @@ class OfflineGuiTests(unittest.TestCase):
         window = MainWindow(str(ROOT/'config'/'default.yaml'))
         try:
             manager = window.sensor_manager
-            with patch.object(manager.controller,'start') as start, \
+            with patch.object(manager.controller,'arm') as start, \
                     patch.object(manager.controller,'stop') as stop:
                 window.recording_panel.offline_button.click()
                 dialog = window._offline_workbench

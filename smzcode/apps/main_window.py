@@ -40,7 +40,7 @@ def main():
         window.show()
         
         print("=" * 60)
-        print("传感器数据采集系统 v1.2 - 上位机标定与阈值控制器")
+        print("传感器数据采集系统 v1.2 - 标定与 STM32 板端控制")
         print("=" * 60)
         print("[INFO] 系统已启动")
         print("[INFO] 配置文件: config/default.yaml")
@@ -48,7 +48,7 @@ def main():
         print("[INFO] 支持传感器:")
         print("       - 粘附脚传感器")
         print("       - 六轴力传感器")
-        print("[INFO] 黏附脚上行: 0x123 通道/测时、0x124 对和、0x125 反馈")
+        print("[INFO] 黏附脚上行: 0x123 通道/测时、0x124 对和、0x125 反馈、0x126 板端控制")
         print("[INFO] 刷新频率: 10Hz")
         print("=" * 60)
         

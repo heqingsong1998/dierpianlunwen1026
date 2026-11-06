@@ -1,0 +1,13 @@
+{
+  "model_tag": 3680732261,
+  "selected_seed": 2026,
+  "calibration": {
+    "model_id": "joint_nominal_20261102_220006_663111",
+    "reference_sign": "compression_negative",
+    "coefficients": [
+      -0.0001250350686552863,
+      -0.0021437948772073767,
+      -0.10909380228453669
+    ]
+  }
+}

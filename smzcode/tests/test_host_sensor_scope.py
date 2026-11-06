@@ -71,6 +71,7 @@ class HostSensorScopeTests(unittest.TestCase):
                 'nianfujiao_style0.csv', 'nianfujiao_frames.csv', 'liuzhouli.csv',
                 'nianfujiao_stage_pairs.csv', 'nianfujiao_commands.csv',
                 'nianfujiao_feedback.csv', 'nianfujiao_controller.csv', 'controller_config.json',
+                'nianfujiao_board.csv',
             })
             for filename in ('nianfujiao_style0.csv', 'liuzhouli.csv'):
                 with (session / filename).open(encoding='utf-8', newline='') as handle:

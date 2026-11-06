@@ -13,12 +13,16 @@ SETTINGS_PATH = Path(__file__).resolve().parents[1] / 'config' / 'settings.json'
 class ThresholdSettings:
     threshold_total_n: float = 3.0
     trigger_action: int = 1  # PA4: 0=LOW, 1=HIGH
+    strategy: int = 1
+    use_model_calibration: bool = True
 
     def __post_init__(self):
         if not math.isfinite(self.threshold_total_n) or not 0 <= self.threshold_total_n <= 10000:
             raise ValueError('总法向力阈值必须在 0 到 10000 N 之间（压缩为正）')
         if self.trigger_action not in (0, 1):
             raise ValueError('触发动作只能为 PA4 LOW 或 HIGH')
+        if self.strategy not in (1, 2) or not isinstance(self.use_model_calibration, bool):
+            raise ValueError('板端策略或标定来源无效')
 
     @classmethod
     def load(cls, path=SETTINGS_PATH):

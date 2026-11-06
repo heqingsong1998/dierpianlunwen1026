@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from drivers.nianfujiao_song import NianFuJiaoDevice
 from drivers.sensors.utils import create_sensor, initialize_sensor
 from controller.algorithms.calibration import raw_from_sample
-from controller.worker import FootController
+from controller.board import BoardController
 
 
 class SensorManager(QObject):
@@ -86,7 +86,7 @@ class SensorManager(QObject):
         self.record_callback_nianfujiao_aux = None
         self.nianfujiao_frame_callback = None  # Optional observer of each real frame.
         self.latest_nianfujiao_protocol = {'stage_pairs': None, 'feedback': None}
-        self.controller = FootController(self.nianfujiao_send_timed_action, self._on_controller_event)
+        self.controller = BoardController(self._request_board, self._on_controller_event)
         self._foot_zero_wait_generation = None
         # 粘附脚去重：记录每个 style 最近一次已写入的 sensor_ts_ms
         self._nianfujiao_last_written_sensor_ts_ms = {}
@@ -312,6 +312,7 @@ class SensorManager(QObject):
             # Register before opening: do not lose first metadata/ACK frames.
             self.nianfujiao.register_callback(self._on_nianfujiao_callback)
             self.latest_nianfujiao_protocol = {'stage_pairs': None, 'feedback': None}
+            self.controller.reset_connection()
             self.nianfujiao.open()
             if not self.nianfujiao.is_open:
                 raise RuntimeError('黏附脚串口未能打开')
@@ -349,11 +350,6 @@ class SensorManager(QObject):
         try:
             if data_type == 'style0':
                 style = 0
-                # 入队在显示标定/CSV 回调之前，控制时延包括实际排队、算法和发送提交。
-                self.controller.enqueue({
-                    'raw': raw_from_sample(data), 'sample_sequence': data.sample_sequence,
-                    'ready_us': data.ready_us, 'host_received_ns': data.host_received_ns,
-                })
                 data_dict = self._convert_style0_data(data)
                 data_dict['sensor_ts_ms'] = data.sensor_ts_ms or int(time.time() * 1000)
                 data_dict['host_received_ns'] = data.host_received_ns or time.perf_counter_ns()
@@ -372,7 +368,6 @@ class SensorManager(QObject):
                 if (self._foot_zero_wait_generation is not None and
                         generation != self._foot_zero_wait_generation):
                     self._foot_zero_wait_generation = None
-                self.controller.observe_generation(generation)
                 cached = self.latest_data['nianfujiao'].get(0)
                 if cached and (cached.get('sample_sequence'), cached.get('ready_us')) == (
                         data['sample_sequence'], data['ready_us']):
@@ -384,12 +379,15 @@ class SensorManager(QObject):
                     self.record_callback_nianfujiao_aux('stage_pairs', data)
             elif data_type == 'command_ack':
                 self.latest_nianfujiao_protocol['feedback'] = dict(data)
-                self.controller.on_feedback(data)
                 if self.record_callback_nianfujiao_aux:
                     self.record_callback_nianfujiao_aux('feedback', data)
             elif data_type == 'command_sent':
                 if self.record_callback_nianfujiao_aux:
                     self.record_callback_nianfujiao_aux('commands', data)
+            elif data_type == 'board_status':
+                self.controller.observe(data)
+                if self.record_callback_nianfujiao_aux:
+                    self.record_callback_nianfujiao_aux('board', data)
             else:
                 return
 
@@ -474,8 +472,11 @@ class SensorManager(QObject):
 
     def disconnect_nianfujiao(self):
         """断开粘附脚传感器"""
-        self.controller.stop('黏附脚已断开，控制器已停止')
         if self.nianfujiao:
+            try:
+                self.controller.stop()
+            except (OSError, ValueError) as exc:
+                self.error_occurred.emit('nianfujiao', f'断开前未确认板端撤防：{exc}')
             try:
                 self.nianfujiao.close()
             except Exception:
@@ -486,6 +487,7 @@ class SensorManager(QObject):
             self._nianfujiao_last_written_sensor_ts_ms.clear()
             self.latest_data['nianfujiao'][0] = None
             self.latest_nianfujiao_protocol = {'stage_pairs': None, 'feedback': None}
+            self.controller.reset_connection()
             self._foot_zero_wait_generation = None
             print("[INFO] 粘附脚传感器已断开")
 
@@ -577,12 +579,10 @@ class SensorManager(QObject):
             'protocol_version': getattr(device, 'protocol_version', 0),
         }
 
-    def nianfujiao_send_timed_action(self, action, frame, input_received_ns):
-        """控制器输出绑定实际输入帧，禁止改成显示缓存中的最新样本。"""
+    def _request_board(self, action, value):
         if not self.nianfujiao or not self.connection_status['nianfujiao']:
-            return None
-        return self.nianfujiao.send_timed_action(
-            action, frame['sample_sequence'], frame['ready_us'], input_received_ns)
+            raise OSError('请先连接黏附脚')
+        return self.nianfujiao.request_board(action, value)
 
     def _on_controller_event(self, data):
         if self.record_callback_nianfujiao_aux:
@@ -592,21 +592,19 @@ class SensorManager(QObject):
         if data['event'] != 'decision':
             self.controller_updated.emit(self.controller.snapshot())
 
-    def start_controller(self):
-        import time
+    def apply_controller(self):
         if not self.nianfujiao or not self.connection_status['nianfujiao']:
             raise ValueError('请先连接黏附脚')
-        pairs = self.latest_nianfujiao_protocol.get('stage_pairs')
-        if (not pairs or pairs.get('protocol_version') != 1 or
-                time.perf_counter_ns() - pairs.get('host_received_ns', 0) > 500_000_000):
-            raise ValueError('请等待新版协议的实时数据（0x124）后再启动控制器')
         if self._foot_zero_wait_generation is not None:
             raise ValueError('正在等待下位机应用新的清零基准，请稍后重新布防')
-        self.controller.start(pairs['baseline_generation'])
+        return self.controller.apply()
+
+    def start_controller(self):
+        generation = self.apply_controller()
+        self.controller.arm(generation)
 
     def nianfujiao_reply(self) -> bool:
         """粘附脚回复指令（恢复默认状态）"""
-        self.controller.stop('手动回复，控制器已停止')
         if self.nianfujiao and self.connection_status['nianfujiao']:
             success = self.nianfujiao.send_reply()
             if success:
@@ -618,7 +616,6 @@ class SensorManager(QObject):
 
     def nianfujiao_engage(self) -> bool:
         """粘附脚吸合指令"""
-        self.controller.stop('手动吸合，控制器已停止')
         if self.nianfujiao and self.connection_status['nianfujiao']:
             success = self.nianfujiao.send_engage()
             if success:
@@ -630,7 +627,6 @@ class SensorManager(QObject):
 
     def nianfujiao_zero(self) -> bool:
         """粘附脚清零指令"""
-        self.controller.stop('黏附脚清零，完成后请重新布防')
         if self.nianfujiao and self.connection_status['nianfujiao']:
             pairs = self.latest_nianfujiao_protocol.get('stage_pairs')
             self._foot_zero_wait_generation = pairs['baseline_generation'] if pairs else None

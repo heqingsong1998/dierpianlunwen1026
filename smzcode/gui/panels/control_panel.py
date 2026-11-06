@@ -2,7 +2,7 @@
 控制面板 - 传感器控制操作
 """
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                             QPushButton, QLabel, QFormLayout, QDoubleSpinBox, QComboBox, QSizePolicy)
+                             QPushButton, QLabel, QFormLayout, QDoubleSpinBox, QComboBox, QSizePolicy, QCheckBox)
 from PyQt5.QtCore import pyqtSignal, Qt
 
 
@@ -69,12 +69,20 @@ class ControlPanel(QWidget):
         liuzhouli_group.setLayout(liuzhouli_layout)
         layout.addWidget(liuzhouli_group)
 
-        controller_group = QGroupBox("上位机控制器：总法向力 → 单阈值")
+        controller_group = QGroupBox("STM32 板端控制器")
         controller_layout = QVBoxLayout(controller_group)
         form = QFormLayout()
+        self.strategy = QComboBox()
+        self.strategy.addItem("实测力阈值", 1)
+        self.strategy.addItem("模型预测", 2)
+        form.addRow("控制策略", self.strategy)
+        self.model_calibration = QCheckBox("使用固件模型的训练标定（两策略对照）")
+        self.model_calibration.setChecked(True)
+        self.model_calibration.setToolTip("取消勾选时，下发上位机重载的联合标定。预测模式仍要求系数与训练一致。")
+        form.addRow("联合标定", self.model_calibration)
         self.threshold_total = QDoubleSpinBox()
         self.threshold_total.setDecimals(3)
-        self.threshold_total.setRange(0, 10000)
+        self.threshold_total.setRange(0.001, 10000)
         self.threshold_total.setSingleStep(0.1)
         self.threshold_total.setSuffix(' N')
         self.threshold_total.setValue(3.0)
@@ -87,8 +95,8 @@ class ControlPanel(QWidget):
         self.trigger_action.setToolTip('按电磁铁实际驱动电路选择触发电平；此项不改变当前引脚')
         form.addRow('触发 PA4 电平', self.trigger_action)
         controller_layout.addLayout(form)
-        rule = QLabel('总法向力达标触发一次（压缩为正）；未达标或触发后保持输出。\n'
-                      '当前采用两路联合试拟合模型，参数待独立验证。')
+        rule = QLabel('两种策略都只触发一次。预测先等待一个全段低于阈值的窗口，后续越阈时立即动作。\n'
+                      '布防前请将 PA4 置于与触发目标相反的电平。')
         rule.setWordWrap(True)
         controller_layout.addWidget(rule)
         self.controller_applied_label = QLabel()
@@ -162,27 +170,39 @@ class ControlPanel(QWidget):
 
     def controller_settings(self):
         return {'threshold_total_n': self.threshold_total.value(),
-                'trigger_action': self.trigger_action.currentData()}
+                'trigger_action': self.trigger_action.currentData(),
+                'strategy': self.strategy.currentData(),
+                'use_model_calibration': self.model_calibration.isChecked()}
 
     def set_controller_settings(self, settings):
         self.threshold_total.setValue(settings['threshold_total_n'])
         self.trigger_action.setCurrentIndex(self.trigger_action.findData(settings['trigger_action']))
+        self.strategy.setCurrentIndex(self.strategy.findData(settings.get('strategy', 1)))
+        self.model_calibration.setChecked(settings.get('use_model_calibration', True))
 
     def update_controller_status(self, status):
-        settings = status['settings']
-        self.controller_applied_label.setText(
-            f"已应用：总法向力 ≥ {settings['threshold_total_n']:g} N（压缩为正），"
-            f"PA4 {'HIGH' if settings['trigger_action'] else 'LOW'}")
+        board = status['board']
+        settings = status['applied_settings']
+        if board:
+            mode = '模型预测' if board['strategy'] == 2 else '实测力阈值'
+            output = f"，触发 PA4 {'HIGH' if settings['trigger_action'] else 'LOW'}" if settings else ''
+            self.controller_applied_label.setText(
+                f"板端报告：{mode}，阈值 {board['threshold_n']:g} N{output}\n"
+                f"配置 {board['config_revision']} · 模型 {board['model_tag']:08X}")
+        else:
+            self.controller_applied_label.setText('等待板端参数')
         self.controller_stop_btn.setEnabled(status['active'])
         self.controller_status_label.setText(status['message'])
         self.controller_status_label.setStyleSheet(
             'color: #b22222;' if status['state'] == 'error' else
             'color: #176b35;' if status['active'] else 'color: #555;')
-        if 'fz_total_n' in status:
+        if board:
+            crossing = board['crossing_ms']
+            predicted = f"预测越阈 +{crossing:.2f} ms" if crossing >= 0 else "预测越阈 —"
+            latency = board['trigger_latency_us']
+            timing = f"，触发帧至 PA4 {latency} μs" if latency is not None else ''
             self.controller_values_label.setText(
-                f"控制输入总法向力：{status['fz_total_n']:.4f} N（压缩为正）\n"
-                f"六轴符号参考：{status['fz_total_reference_n']:.4f} N\n"
-                f"帧 {status['sample_sequence']}；处理 {status['controller_us']:.1f} μs；"
-                f"丢弃输入 {status['dropped_inputs']}")
+                f"板端实测合力 {board['force_n']:.4f} N，{predicted}\n"
+                f"帧 {board['sample_sequence']} · 处理 {board['compute_us']} μs{timing}")
         else:
             self.controller_values_label.setText('控制输入总法向力（压缩为正）：-- N')

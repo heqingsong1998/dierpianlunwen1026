@@ -20,7 +20,8 @@ try {
     $env:PATH = (Split-Path -Parent $CompilerPath) + ';' + $env:PATH
     & $CompilerPath -std=c99 -Wall -Wextra -Werror -Wno-unused-parameter -O0 -g -static `
         ('-I' + (Join-Path $PSScriptRoot 'stubs')) `
-        ('-I' + (Join-Path $workspaceRoot 'Core\Inc')) $testSource -o $testExe
+        ('-I' + (Join-Path $workspaceRoot 'Core\Inc')) $testSource `
+        (Join-Path $workspaceRoot 'Core\Src\foot_controller.c') -o $testExe
     if ($LASTEXITCODE -ne 0) { throw 'Native firmware test compilation failed.' }
     & $testExe
     if ($LASTEXITCODE -ne 0) { throw 'Native firmware tests failed.' }

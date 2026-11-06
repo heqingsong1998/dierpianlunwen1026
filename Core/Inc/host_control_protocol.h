@@ -9,7 +9,9 @@
 #define HOST_DATA_CAN_ID            0x123U
 #define HOST_STAGE_PAIR_CAN_ID      0x124U
 #define HOST_ACK_CAN_ID             0x125U
+#define HOST_BOARD_CAN_ID           0x126U
 #define HOST_COMMAND_MAGIC          0xC1U
+#define HOST_BOARD_MAGIC            0xC2U
 #define HOST_ACK_SIZE               32U
 #define HOST_TIME_INVALID           0xFFFFFFFFUL
 
@@ -17,10 +19,22 @@
 #define HOST_ACTION_HIGH            1U
 #define HOST_ACTION_HOLD            2U
 #define HOST_ACTION_ZERO            3U
+#define HOST_BOARD_DISARM          16U
+#define HOST_BOARD_BEGIN           17U
+#define HOST_BOARD_CAL_A           18U
+#define HOST_BOARD_CAL_B           19U
+#define HOST_BOARD_CAL_C           20U
+#define HOST_BOARD_THRESHOLD       21U
+#define HOST_BOARD_COMMIT          22U
+#define HOST_BOARD_ARM             23U
 
 #define HOST_ACK_OK                 0U
 #define HOST_ACK_UNKNOWN_SAMPLE     1U
 #define HOST_ACK_BASELINE_CHANGED   2U
+#define HOST_ACK_BOARD_BUSY         3U
+#define HOST_ACK_INVALID_CONFIG    4U
+#define HOST_ACK_MODEL_CALIBRATION 5U
+#define HOST_ACK_OUTPUT_ALREADY_SET 6U
 
 #define HOST_ACK_FLAG_TIMING_VALID  0x0001U
 #define HOST_ACK_FLAG_GPIO_WRITTEN  0x0002U
@@ -31,6 +45,7 @@
 typedef struct {
     uint32_t sample_sequence;
     uint32_t received_us;
+    uint32_t value;
     uint16_t command_id;
     uint8_t action;
     uint8_t zero_requested;
@@ -91,6 +106,14 @@ static inline uint8_t HostProtocol_DecodeCommand(const uint8_t *data,
         decoded.command_id = HostProtocol_GetU16(&data[2]);
         decoded.sample_sequence = HostProtocol_GetU32(&data[4]);
         decoded.zero_requested = (data[1] == HOST_ACTION_ZERO) ? 1U : 0U;
+    } else if (data[0] == HOST_BOARD_MAGIC && data[1] >= HOST_BOARD_DISARM &&
+               data[1] <= HOST_BOARD_ARM) {
+        decoded.action = data[1];
+        decoded.command_id = HostProtocol_GetU16(&data[2]);
+        decoded.value = HostProtocol_GetU32(&data[4]);
+        if (decoded.command_id == 0U) {
+            return 0U;
+        }
     } else if ((data[0] == 0xA4U || data[0] == 0xA5U) &&
                data[1] <= HOST_ACTION_HOLD && data[2] <= 1U) {
         /* Legacy mode 2 now means HOLD; it never enables a local threshold. */

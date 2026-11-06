@@ -19,7 +19,9 @@ sys.path.insert(0, str(ROOT))
 from controller.algorithms.calibration import Calibration, RAW_FIELDS, CALIBRATED_FIELDS
 from controller.algorithms.threshold import ThresholdSettings, threshold_reached
 from controller.worker import FootController
-from drivers.nianfujiao_song.protocol import PendingCommand, GPIO_WRITTEN, TIMING_VALID, GPIO_CHANGED
+from drivers.nianfujiao_song.protocol import (
+    BOARD_ARM, BOARD_COMMIT, BOARD_DISARM, GPIO_WRITTEN, PendingCommand,
+)
 from test_nianfujiao_protocol import device, feed, wire, channels, pairs
 from core.sensor_manager import SensorManager
 from core.data_recorder import DataRecorder
@@ -77,7 +79,7 @@ class CalibrationTests(unittest.TestCase):
             self.assertEqual(migrated, ThresholdSettings(3.0, 0))
             migrated.save(path)
             self.assertEqual(json.loads(path.read_text(encoding='utf-8')),
-                             {'threshold_total_n': 3.0, 'trigger_action': 0})
+                             asdict(ThresholdSettings(3.0, 0)))
 
     def test_settings_persist_and_custom_calibration_loads(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -294,13 +296,45 @@ class ControllerIntegrationTests(unittest.TestCase):
         manager.nianfujiao.register_callback(manager._on_nianfujiao_callback)
         manager.connection_status['nianfujiao'] = True
         manager.controller.configure(ThresholdSettings(2.5))
-        self.addCleanup(manager.controller.stop)
+        self.addCleanup(manager.disconnect_nianfujiao)
         self.addCleanup(manager.display_timer.stop)
+        self.revision = 0
+        self.generation = 3
+        self.strategy = 1
+        self.state = 0
+
+        def respond(packet):
+            magic, action, command_id, value = struct.unpack('<BBHI', packet[7:15])
+            if magic == 0xC2:
+                if action == BOARD_COMMIT:
+                    self.revision += 1
+                    self.strategy = value & 0xff
+                elif action == BOARD_ARM:
+                    self.assertEqual(value, (self.revision << 16) | self.generation)
+                    self.state = 1
+                elif action == BOARD_DISARM:
+                    self.state = 0
+                payload = struct.pack('<4B2H5I2H', 1, 0, action, 0, command_id, 0,
+                                      0, self.revision, 0, 0, 0, self.generation, 0)
+                feed(manager.nianfujiao, wire(0x125, payload))
+            elif magic == 0xC1 and action == 3:
+                self.state = 0
+
+        manager.nianfujiao.serial_conn.on_write = respond
+        self.feed_status(manager)
         return manager
 
-    def test_real_protocol_to_controller_to_ack_and_csv_without_display_duplicates(self):
+    def feed_status(self, manager, sequence=1, ready=100000, trigger=0):
+        payload = struct.pack('<4B2H5I3f2I', 1, self.strategy, self.state, int(self.state == 2),
+                              self.generation, self.revision, sequence, ready,
+                              trigger, ready, ready + 120, 3.5, 4.0, 2.5, 118,
+                              manager.controller.model['model_tag'])
+        feed(manager.nianfujiao, wire(0x126, payload))
+
+    def test_board_status_and_config_to_csv_without_host_frame_commands(self):
         manager = self.make_manager()
         dev = manager.nianfujiao
+        manager.controller.configure(ThresholdSettings(2.5, strategy=2))
         with tempfile.TemporaryDirectory() as temp:
             recorder = DataRecorder(temp)
             manager.record_callback_nianfujiao_aux = recorder.write_nianfujiao_aux
@@ -309,26 +343,17 @@ class ControllerIntegrationTests(unittest.TestCase):
             try:
                 feed(dev, wire(0x124, pairs()))
                 manager.start_controller()
+                self.feed_status(manager)
                 recorder.write_controller_snapshot(manager.controller.snapshot())
-
-                def reply(packet):
-                    action, command_id, sequence = struct.unpack('<BHI', packet[8:15])
-                    pending = dev._pending_commands[(command_id, sequence)]
-                    round_trip = int((pending.submitted_ns - pending.input_received_ns) / 1000) + 7000
-                    ready = pending.ready_us
-                    received = (ready + round_trip) & 0xFFFFFFFF
-                    flags = TIMING_VALID | (GPIO_WRITTEN | GPIO_CHANGED if action < 2 else 0)
-                    payload = struct.pack('<4B2H5I2H', 1, 0, action, 1, command_id, flags,
-                                          sequence, ready, received, received, round_trip, 3, 0)
-                    feed(dev, wire(0x125, payload))
-
-                dev.serial_conn.on_write = reply
+                self.assertEqual(dev.serial_conn.writes[-1][7:9], bytes((0xC2, BOARD_ARM)))
+                before = len(dev.serial_conn.writes)
                 feed(dev, wire(0x123, channels(2, 200000)))
-                wait_for(lambda: manager.controller.snapshot()['processed'] == 1)
+                self.state = 2
+                self.feed_status(manager, 2, 200000, 2)
                 manager._update_display()
                 manager._update_display()
                 feed(dev, wire(0x123, channels(3, 216000)))
-                wait_for(lambda: manager.controller.snapshot()['processed'] == 2)
+                self.assertEqual(len(dev.serial_conn.writes), before)
                 manager.controller.stop()
             finally:
                 recorder.stop_recording()
@@ -338,39 +363,37 @@ class ControllerIntegrationTests(unittest.TestCase):
                 with (path / f'nianfujiao_{kind}.csv').open(encoding='utf-8', newline='') as handle:
                     return list(csv.DictReader(handle))
 
-            decisions = [row for row in rows('controller') if row['event'] == 'decision']
-            self.assertEqual(len(decisions), 2)
-            self.assertEqual([int(row['action']) for row in decisions], [1, 2])
-            feedback = rows('feedback')
-            self.assertEqual(len(feedback), 2)
-            self.assertTrue(all(row['timing_valid'] == 'True' for row in feedback))
-            self.assertTrue(all(6999 <= float(row['transport_sum_us']) <= 7000 for row in feedback))
+            self.assertEqual([row['event'] for row in rows('controller')],
+                             ['board_config', 'board_arm', 'board_disarm'])
+            self.assertEqual(len(rows('board')), 2)
+            self.assertEqual(rows('board')[-1]['trigger_latency_us'], '120')
+            self.assertEqual(rows('board')[-1]['strategy'], '2')
             self.assertEqual(len(rows('frames')), 2)
             snapshot = json.loads((path / 'controller_config.json').read_text(encoding='utf-8'))
             self.assertEqual(snapshot['settings']['threshold_total_n'], 2.5)
             self.assertIn('coefficients', snapshot['calibration'])
             self.assertIn('normal_force', snapshot['calibration'])
-            self.assertAlmostEqual(float(decisions[0]['fz_total_n']),
-                                   -float(decisions[0]['fz_total_reference_n']))
-            self.assertEqual(float(decisions[0]['threshold_total_n']), 2.5)
             for row in rows('frames'):
-                self.assertAlmostEqual(float(row['Fz_total_cal']),
-                                       float(decisions[0]['fz_total_n']))
-                self.assertTrue(row['normal_force_model_id'])
+                self.assertEqual(row['normal_force_model_id'], manager.controller.model['calibration']['model_id'])
 
     def test_manual_zero_stops_controller_and_requires_new_baseline_before_start(self):
         manager = self.make_manager()
         dev = manager.nianfujiao
         feed(dev, wire(0x124, pairs()))
         manager.start_controller()
+        self.feed_status(manager)
+        self.assertTrue(manager.controller.snapshot()['active'])
         self.assertTrue(manager.nianfujiao_zero())
+        self.feed_status(manager)
         self.assertFalse(manager.controller.snapshot()['active'])
         with self.assertRaisesRegex(ValueError, '清零'):
             manager.start_controller()
         payload = bytearray(pairs(2, 200000))
         struct.pack_into('<H', payload, 24, 4)
+        self.generation = 4
         feed(dev, wire(0x124, payload))
         manager.start_controller()
+        self.feed_status(manager)
         self.assertTrue(manager.controller.snapshot()['active'])
         manager.disconnect_nianfujiao()
         self.assertFalse(manager.controller.snapshot()['active'])
@@ -387,8 +410,8 @@ class ControllerIntegrationTests(unittest.TestCase):
                 panel.controller_apply_btn.click()
                 save.assert_called_once()
             self.assertEqual(window.sensor_manager.controller.settings, ThresholdSettings(2.4, 0))
-            self.assertIn('2.4', panel.controller_applied_label.text())
-            self.assertIn('总法向力', panel.controller_applied_label.text())
+            self.assertIn('等待板端', panel.controller_applied_label.text())
+            self.assertIn('参数已保存', window.statusBar().currentMessage())
             raw = frame(1, 1493, 967)['raw']
             values = Calibration().apply(raw, rounded=True)
             window.data_display_panel.update_nianfujiao_data(0, dict(values, raw=raw))

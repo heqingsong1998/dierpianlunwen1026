@@ -129,7 +129,8 @@ static void TestAcquisitionAndWireCompatibility(void)
     assert(sample.legacy_values[5] == 1070 && sample.legacy_values[6] == 1040);
     assert(sample.legacy_values[12] == 1071 && sample.legacy_values[13] == 1041);
     assert(sample.legacy_values[14] == 8340 && sample.legacy_values[15] == 8348);
-    SendSample(&sample); assert(tx_count == 2 && tx_frames[0].id == 0x123 && tx_frames[1].id == 0x124);
+    SendSample(&sample);
+    assert(tx_count == 3 && tx_frames[0].id == 0x123 && tx_frames[1].id == 0x124 && tx_frames[2].id == 0x126);
     assert(HostProtocol_GetU16(&tx_frames[0].data[0]) == (uint16_t)-20);
     assert(HostProtocol_GetU32(&tx_frames[0].data[32]) == 0); /* Removed flags. */
     assert(HostProtocol_GetU32(&tx_frames[0].data[40]) == 1);
@@ -241,6 +242,85 @@ static void TestBusyTxIsBounded(void)
     busy_tx_attempts = 2; SendFrame(0x125, data, FDCAN_DLC_BYTES_32);
     assert(tx_count == 1 && dropped_tx_frames == 1);
 }
+static uint8_t BoardCommand(uint8_t action, uint32_t value)
+{
+    uint8_t packet[8] = {HOST_BOARD_MAGIC, action, 1, 0};
+    HostControlCommand command;
+    HostProtocol_PutU32(&packet[4], value);
+    assert(HostProtocol_DecodeCommand(packet, &command));
+    ProcessHostCommand(&command);
+    assert(tx_frames[tx_count - 1].id == HOST_ACK_CAN_ID);
+    return tx_frames[--tx_count].data[1];
+}
+
+static uint8_t BoardParameter(uint8_t action, float parameter)
+{
+    uint32_t bits;
+    memcpy(&bits, &parameter, sizeof(bits));
+    return BoardCommand(action, bits);
+}
+
+static void StageConfig(float threshold, int mismatch)
+{
+    assert(BoardCommand(HOST_BOARD_BEGIN, 0) == HOST_ACK_OK);
+    assert(BoardParameter(HOST_BOARD_CAL_A, foot_controller.config.calibration[0] + mismatch) == HOST_ACK_OK);
+    assert(BoardParameter(HOST_BOARD_CAL_B, foot_controller.config.calibration[1]) == HOST_ACK_OK);
+    assert(BoardParameter(HOST_BOARD_CAL_C, foot_controller.config.calibration[2]) == HOST_ACK_OK);
+    assert(BoardParameter(HOST_BOARD_THRESHOLD, threshold) == HOST_ACK_OK);
+}
+
+static void TestBoardStrategies(void)
+{
+    CalclptData sample = {0};
+
+    ResetFixture();
+    assert(BoardCommand(HOST_BOARD_ARM, 0) == HOST_ACK_INVALID_CONFIG);
+    StageConfig(3.0f, 0);
+    assert(BoardCommand(HOST_BOARD_COMMIT, 0x0101) == HOST_ACK_OK);
+    assert(BoardCommand(HOST_BOARD_ARM, 0x10001) == HOST_ACK_BASELINE_CHANGED);
+    assert(BoardCommand(HOST_BOARD_ARM, 0x10000) == HOST_ACK_OK);
+    assert(BoardCommand(HOST_BOARD_BEGIN, 0) == HOST_ACK_BOARD_BUSY);
+    sample = Acquire(2, 100000);
+    assert(sample.board_data[2] == FOOT_TRIGGERED && gpio_writes == 1);
+    assert(HostProtocol_GetU32(&sample.board_data[16]) == 1U);
+    assert(BoardCommand(HOST_BOARD_ARM, 0x10000) == HOST_ACK_OUTPUT_ALREADY_SET);
+
+    ResetFixture();
+    memcpy(offset1, adc_values[0], sizeof(offset1));
+    memcpy(offset2, adc_values[1], sizeof(offset2));
+    StageConfig(3.0f, 1);
+    assert(BoardCommand(HOST_BOARD_COMMIT, 0x0102) == HOST_ACK_MODEL_CALIBRATION);
+    StageConfig(0.2f, 0);
+    assert(BoardCommand(HOST_BOARD_COMMIT, 0x0102) == HOST_ACK_OK);
+    assert(BoardCommand(HOST_BOARD_ARM, 0x10000) == HOST_ACK_OK);
+    sample = Acquire(15, 100000);
+    assert(sample.board_data[2] == FOOT_WARMUP && gpio_writes == 0);
+    assert(foot_controller.count == 15U);
+    sample = Acquire(1, sample.ready_us + 16000U);
+    assert(sample.board_data[2] == FOOT_WAIT_CLEAR && gpio_writes == 0);
+    assert(BoardCommand(HOST_BOARD_DISARM, 0) == HOST_ACK_OK);
+    StageConfig(0.65f, 0);
+    assert(BoardCommand(HOST_BOARD_COMMIT, 0x0102) == HOST_ACK_OK);
+    assert(BoardCommand(HOST_BOARD_ARM, 0x20000) == HOST_ACK_OK);
+    sample = Acquire(1, sample.ready_us + 16000U);
+    assert(sample.board_data[2] == FOOT_ARMED && gpio_writes == 0);
+    adc_values[1][0] += 1000U;
+    sample = Acquire(16, sample.ready_us + 16000U);
+    assert(sample.board_data[2] == FOOT_TRIGGERED && gpio_writes == 1);
+
+    ResetFixture();
+    StageConfig(3.0f, 0);
+    assert(BoardCommand(HOST_BOARD_COMMIT, 0x0101) == HOST_ACK_OK);
+    assert(BoardCommand(HOST_BOARD_ARM, 0x10000) == HOST_ACK_OK);
+    stop_pending = 1;
+    sample = Acquire(1, 100000);
+    assert(gpio_writes == 0);
+    assert(BoardCommand(HOST_BOARD_DISARM, 0) == HOST_ACK_OK && stop_pending == 0U);
+    assert(BoardCommand(HOST_BOARD_ARM, 0x10000) == HOST_ACK_OK);
+    RunFootController(&sample, sample.ready_us - 16000U);
+    assert(foot_state == FOOT_DEADLINE && gpio_writes == 0);
+}
+
 int main(void)
 {
     TestAcquisitionAndWireCompatibility();
@@ -249,6 +329,7 @@ int main(void)
     TestZeroAndRejectedReferences();
     TestDecodeAndRxFiltering();
     TestBusyTxIsBounded();
-    puts("PASS: acquisition compatibility, CIN9/CIN4 proximity mapping and isolation from CIN11, no autonomous output, timing/rollover, zero/hold, stale references, RX validation/overflow, bounded TX retries");
+    TestBoardStrategies();
+    puts("PASS: acquisition, protocol, manual GPIO/zero, both local strategies, warmup, disarm and deadline");
     return 0;
 }

@@ -12,7 +12,8 @@
 | `20x30_RTOS.ioc` | STM32CubeMX 工程配置 |
 | `MDK-ARM/20x30_RTOS.uvprojx` | Keil MDK 工程入口 |
 | `smzcode/apps/main_window.py` | 上位机 GUI 入口 |
-| `smzcode/controller/` | 独立控制线程、标定参数与双阈值算法 |
+| `smzcode/controller/` | 板端控制接口、标定参数与离线分析 |
+| `smzcode/training/` | 模型训练、推理检查与 STM32 权重导出 |
 | `smzcode/config/default.yaml` | 串口、六轴力设备网络等配置 |
 | `tests/firmware/` | 下位机本机模拟测试 |
 | `smzcode/tests/` | 上位机协议、控制器、同步记录与清零测试 |
@@ -67,16 +68,7 @@ cd smzcode
 
 ## 控制与标定
 
-控制链路为：下位机采样、清零并上传 → 上位机独立控制线程标定 → 两组 Fz 阈值判断 → 下发命令 → 下位机更新 GPIO。
-
-默认两组阈值均为 1.5 N，同时达到阈值时触发一次。界面可修改阈值、触发 PA4 电平，启停控制器或重新布防。参数和标定文件会随 Git 版本同步：
-
-- `smzcode/controller/config/settings.json`：界面保存的阈值和触发电平。
-- `smzcode/controller/config/calibration.json`：已有的多项式标定参数，修改后可在界面重载。
-
-程序中修改这些参数后，必须提交并推送相应文件，另一台电脑才能通过 `git pull` 获得新参数。实验原始数据默认保存在运行目录下的 `data/sessions/`，该目录不会随源码上传，需要另行保存实验记录。
-
-详见 [控制器说明](smzcode/controller/README.md)、[上位机协议](smzcode/docs/protocol_v1.md) 和 [下位机协议](docs/host_control_protocol.md)。
+STM32 在采样任务内完成标定、判断和 PA4 输出。界面可选择实测力阈值或模型预测，下发阈值和联合标定，布防、撤防和手动操作。上位机同时采集黏附脚及六轴力，并保留离线标定。操作、日志字段和模型更新步骤见 [板端控制说明](docs/board_controller.md)。
 
 ## 在两台电脑之间同步修改
 

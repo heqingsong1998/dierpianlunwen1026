@@ -44,6 +44,13 @@ class Calibration:
     def snapshot(self):
         return copy.deepcopy(self._config)
 
+    def with_normal_force(self, config):
+        result = copy.copy(self)
+        result._config = self.snapshot()
+        result._config["normal_force"] = copy.deepcopy(config)
+        result._normal_force = JointNormalForce(config)
+        return result
+
     def apply(self, raw, rounded=False):
         if len(raw) != 24 or not all(math.isfinite(float(x)) for x in raw):
             raise ValueError('标定输入必须为 24 个有限数值')

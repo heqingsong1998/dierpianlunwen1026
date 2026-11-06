@@ -29,6 +29,7 @@
 #include "queue.h"
 #include "can.h"
 #include "host_control_protocol.h"
+#include "foot_controller.h"
 #include <string.h>
 /* USER CODE END Includes */
 
@@ -40,6 +41,7 @@ typedef struct {
     uint32_t sequence;
     uint32_t ready_us;
     uint16_t baseline_generation;
+    uint8_t board_data[48];
 } CalclptData;
 
 typedef struct {
@@ -64,6 +66,15 @@ static volatile uint32_t dropped_commands = 0;
 static uint32_t dropped_tx_frames = 0;
 static QueueHandle_t command_queue = NULL;
 static SampleTiming sample_history[128];
+static FootController foot_controller;
+static FootConfig staged_config;
+static uint8_t staged_fields;
+static uint8_t staging;
+static uint8_t foot_state;
+static volatile uint8_t stop_pending;
+static uint16_t config_revision;
+static uint32_t trigger_sequence, trigger_ready_us, trigger_gpio_us;
+static float trigger_crossing;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -119,6 +130,8 @@ static void Timing_Init(void);
 static uint32_t Timing_NowUs(void);
 static void ProcessHostCommand(const HostControlCommand *command);
 static void SendSample(const CalclptData *sample);
+static void RunFootController(CalclptData *sample, uint32_t started_us);
+static uint8_t ConfigureFoot(const HostControlCommand *command);
 static void SendFrame(uint16_t can_id, const uint8_t *data, uint32_t dlc);
 
 /* USER CODE END FunctionPrototypes */
@@ -136,6 +149,12 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
   Timing_Init();
+  Foot_Init(&foot_controller);
+  foot_state = FOOT_DISARMED;
+  staging = 0U;
+  config_revision = 0U;
+  stop_pending = 0U;
+  trigger_sequence = 0U;
   /* USER CODE END Init */
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -178,7 +197,7 @@ void MX_FREERTOS_Init(void) {
 
 /* USER CODE BEGIN Header_Task_Control */
 /**
-  * @brief  Acquire and zero sensor signals; all decisions belong to the host.
+  * @brief  Acquire, calibrate and run the selected local control policy.
   * @param  argument: Not used
   * @retval None
   */
@@ -195,6 +214,7 @@ void Task_Control(void *argument)
   /* Infinite loop */
   for(;;)
   {
+        uint32_t started_us = Timing_NowUs();
         AD7142_Read1(CDC_RESULT_S0, data1, 10);
         AD7142_Read2(CDC_RESULT_S0, data2, 10);
 
@@ -202,6 +222,7 @@ void Task_Control(void *argument)
             baseline_reset_request = 0U;
             UpdateBaselineFromCurrentSample(data1, data2);
             baseline_generation++;
+            Foot_ResetHistory(&foot_controller);
         }
 
         for (int i = 0; i < 10; i++) {
@@ -246,6 +267,7 @@ void Task_Control(void *argument)
         sample_history[sequence & 127U].baseline_generation = baseline_generation;
         taskEXIT_CRITICAL();
 
+        RunFootController(&sample, started_us);
         xQueueOverwrite((QueueHandle_t)DataHandle, &sample);
         xTaskNotifyGive((TaskHandle_t)CANCommunicatioHandle);
         vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(16));
@@ -269,8 +291,7 @@ void Task_CAN(void *argument)
   for(;;)
   {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        /* This task owns all application TX and GPIO writes. RX interrupts wake
-           it for commands, independently of the 16 ms acquisition schedule. */
+        /* RX interrupts wake this task for commands between acquisitions. */
         for (unsigned int i = 0; i < 8U; i++) {
             if (xQueueReceive(command_queue, &command, 0) != pdTRUE) {
                 break;
@@ -286,6 +307,12 @@ void Task_CAN(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+
+static uint8_t StopsFoot(const HostControlCommand *command)
+{
+    return command->action == HOST_BOARD_DISARM || command->zero_requested != 0U ||
+           command->action == HOST_ACTION_LOW || command->action == HOST_ACTION_HIGH;
+}
 
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
@@ -317,6 +344,9 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         /* D: valid command decoded in RX ISR, before task scheduling or GPIO. */
         command.received_us = Timing_NowUs();
         if (xQueueSendFromISR(command_queue, &command, &higher_priority_task_woken) == pdTRUE) {
+            if (StopsFoot(&command)) {
+                stop_pending++;
+            }
             vTaskNotifyGiveFromISR((TaskHandle_t)CANCommunicatioHandle,
                                   &higher_priority_task_woken);
         } else {
@@ -397,6 +427,168 @@ static void SendSample(const CalclptData *sample)
     HostProtocol_PutU16(&pairs[28], (uint16_t)dropped_commands);
     HostProtocol_PutU16(&pairs[30], (uint16_t)dropped_tx_frames);
     SendFrame(HOST_STAGE_PAIR_CAN_ID, pairs, FDCAN_DLC_BYTES_32);
+    SendFrame(HOST_BOARD_CAN_ID, sample->board_data, FDCAN_DLC_BYTES_48);
+}
+
+static void PutFloat(uint8_t *data, float value)
+{
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    HostProtocol_PutU32(data, bits);
+}
+
+static uint8_t FootIsActive(void)
+{
+    return foot_state == FOOT_ARMED || foot_state == FOOT_WARMUP || foot_state == FOOT_WAIT_CLEAR;
+}
+
+static void RunFootController(CalclptData *sample, uint32_t started_us)
+{
+    uint8_t *data = sample->board_data;
+    const FootConfig *config = &foot_controller.config;
+    float force = Foot_Sample(&foot_controller, sample->legacy_values, sample->ready_us);
+    float crossing = -1.0f;
+    uint8_t reached = 0U;
+    uint8_t status;
+    uint32_t computed_us;
+
+    if (FootIsActive() && stop_pending == 0U) {
+        if (config->strategy == FOOT_THRESHOLD) {
+            reached = force >= config->threshold;
+        } else if (foot_controller.count == 16U) {
+            float predicted[16];
+            Foot_Predict(&foot_controller, predicted);
+            crossing = Foot_Crossing(predicted, config->threshold);
+            if (foot_state == FOOT_ARMED) {
+                reached = crossing >= 0.0f;
+            } else {
+                foot_state = crossing < 0.0f ? FOOT_ARMED : FOOT_WAIT_CLEAR;
+            }
+        } else {
+            foot_state = FOOT_WARMUP;
+        }
+    }
+    computed_us = Timing_NowUs() - sample->ready_us;
+    status = foot_state;
+    taskENTER_CRITICAL();
+    if (FootIsActive() && stop_pending == 0U) {
+        if (Timing_NowUs() - started_us >= 16000U) {
+            foot_state = FOOT_DEADLINE;
+            status = FOOT_DEADLINE;
+        } else if (reached != 0U) {
+            Emag_SetOutput(config->output);
+            trigger_gpio_us = Timing_NowUs();
+            trigger_ready_us = sample->ready_us;
+            trigger_sequence = sample->sequence;
+            trigger_crossing = crossing;
+            foot_state = FOOT_TRIGGERED;
+            status = FOOT_TRIGGERED;
+            emag_mode = config->output ? EMAG_MODE_FORCE_SET : EMAG_MODE_FORCE_RESET;
+        }
+    }
+    taskEXIT_CRITICAL();
+
+    data[0] = HOST_PROTOCOL_VERSION;
+    data[1] = config->strategy;
+    data[2] = status;
+    data[3] = emag_pin_state;
+    HostProtocol_PutU16(&data[4], sample->baseline_generation);
+    HostProtocol_PutU16(&data[6], config_revision);
+    HostProtocol_PutU32(&data[8], sample->sequence);
+    HostProtocol_PutU32(&data[12], sample->ready_us);
+    HostProtocol_PutU32(&data[16], trigger_sequence);
+    HostProtocol_PutU32(&data[20], trigger_sequence ? trigger_ready_us : HOST_TIME_INVALID);
+    HostProtocol_PutU32(&data[24], trigger_sequence ? trigger_gpio_us : HOST_TIME_INVALID);
+    PutFloat(&data[28], force);
+    PutFloat(&data[32], status == FOOT_TRIGGERED ? trigger_crossing : crossing);
+    PutFloat(&data[36], config->threshold);
+    HostProtocol_PutU32(&data[40], computed_us);
+    HostProtocol_PutU32(&data[44], Foot_ModelTag());
+}
+
+static uint8_t ConfigureFoot(const HostControlCommand *command)
+{
+    uint8_t action = command->action;
+    uint32_t value = command->value;
+    float parameter;
+
+    if (action == HOST_BOARD_DISARM) {
+        foot_state = FOOT_DISARMED;
+        staging = 0U;
+        return HOST_ACK_OK;
+    }
+    if (FootIsActive() || baseline_reset_request != 0U) {
+        return HOST_ACK_BOARD_BUSY;
+    }
+    if (action == HOST_BOARD_ARM) {
+        if (config_revision == 0U || (uint16_t)(value >> 16) != config_revision) {
+            return HOST_ACK_INVALID_CONFIG;
+        }
+        if ((uint16_t)value != baseline_generation) {
+            return HOST_ACK_BASELINE_CHANGED;
+        }
+        if (emag_pin_state == foot_controller.config.output) {
+            return HOST_ACK_OUTPUT_ALREADY_SET;
+        }
+        trigger_sequence = 0U;
+        foot_state = foot_controller.config.strategy == FOOT_THRESHOLD ? FOOT_ARMED :
+                     (foot_controller.count < 16U ? FOOT_WARMUP : FOOT_WAIT_CLEAR);
+        staging = 0U;
+        return HOST_ACK_OK;
+    }
+    if (action == HOST_BOARD_BEGIN) {
+        staged_config = foot_controller.config;
+        staged_fields = 0U;
+        staging = 1U;
+        return HOST_ACK_OK;
+    }
+    if (staging == 0U) {
+        return HOST_ACK_INVALID_CONFIG;
+    }
+    if (action == HOST_BOARD_COMMIT) {
+        staging = 0U;
+        staged_config.strategy = (uint8_t)value;
+        staged_config.output = (uint8_t)(value >> 8);
+        if (staged_fields != 15U || value > 0x0102U || staged_config.output > 1U ||
+            (staged_config.strategy != FOOT_THRESHOLD && staged_config.strategy != FOOT_PREDICTION)) {
+            return HOST_ACK_INVALID_CONFIG;
+        }
+        if (staged_config.strategy == FOOT_PREDICTION &&
+            !Foot_MatchesModel(staged_config.calibration)) {
+            return HOST_ACK_MODEL_CALIBRATION;
+        }
+        if (memcmp(staged_config.calibration, foot_controller.config.calibration,
+                   sizeof(staged_config.calibration)) != 0) {
+            Foot_ResetHistory(&foot_controller);
+        }
+        foot_controller.config = staged_config;
+        foot_state = FOOT_DISARMED;
+        trigger_sequence = 0U;
+        config_revision++;
+        if (config_revision == 0U) {
+            config_revision = 1U;
+        }
+        return HOST_ACK_OK;
+    }
+    if ((value & 0x7F800000UL) == 0x7F800000UL) {
+        return HOST_ACK_INVALID_CONFIG;
+    }
+    memcpy(&parameter, &value, sizeof(parameter));
+    if (action == HOST_BOARD_THRESHOLD) {
+        if (!(parameter > 0.0f && parameter <= 10000.0f)) {
+            return HOST_ACK_INVALID_CONFIG;
+        }
+        staged_config.threshold = parameter;
+        staged_fields |= 8U;
+    } else {
+        unsigned int index = action - HOST_BOARD_CAL_A;
+        if (!(parameter >= -1000.0f && parameter <= 1000.0f)) {
+            return HOST_ACK_INVALID_CONFIG;
+        }
+        staged_config.calibration[index] = parameter;
+        staged_fields |= (uint8_t)(1U << index);
+    }
+    return HOST_ACK_OK;
 }
 
 static void ProcessHostCommand(const HostControlCommand *command)
@@ -419,6 +611,9 @@ static void ProcessHostCommand(const HostControlCommand *command)
     /* Acquisition may preempt this task. Validate the history/generation and
        apply the command atomically with respect to publishing/zeroing samples. */
     taskENTER_CRITICAL();
+    if (StopsFoot(command) && stop_pending != 0U) {
+        stop_pending--;
+    }
     if (command->sample_sequence != 0U) {
         timing = &sample_history[command->sample_sequence & 127U];
         if (timing->sequence != command->sample_sequence) {
@@ -433,7 +628,14 @@ static void ProcessHostCommand(const HostControlCommand *command)
         }
     }
 
-    if (ack.status == HOST_ACK_OK) {
+    if (command->action >= HOST_BOARD_DISARM) {
+        ack.status = ConfigureFoot(command);
+        ack.ready_us = config_revision; /* C2 ACK uses this field for revision. */
+    } else if (ack.status == HOST_ACK_OK) {
+        if (StopsFoot(command)) {
+            foot_state = FOOT_DISARMED;
+            staging = 0U;
+        }
         if (command->zero_requested != 0U) {
             baseline_reset_request = 1U;
             ack.flags |= HOST_ACK_FLAG_ZERO_PENDING;
