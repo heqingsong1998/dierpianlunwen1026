@@ -13,7 +13,6 @@ class ControlPanel(QWidget):
     nianfujiao_reply = pyqtSignal()
     nianfujiao_engage = pyqtSignal()
     nianfujiao_zero = pyqtSignal()
-    proximity_view_requested = pyqtSignal()
     
     # 六轴力 信号
     liuzhouli_zero = pyqtSignal()
@@ -55,10 +54,6 @@ class ControlPanel(QWidget):
         self.nianfujiao_zero_btn.clicked.connect(self.nianfujiao_zero.emit)
         command_buttons.addWidget(self.nianfujiao_zero_btn)
         nianfujiao_layout.addLayout(command_buttons)
-        self.proximity_view_btn = QPushButton('接近觉 2×2 三维图')
-        self.proximity_view_btn.setToolTip('打开四路接近觉实时柱状图，辅助调整黏附脚姿态')
-        self.proximity_view_btn.clicked.connect(self.proximity_view_requested.emit)
-        nianfujiao_layout.addWidget(self.proximity_view_btn)
         
         nianfujiao_group.setLayout(nianfujiao_layout)
         layout.addWidget(nianfujiao_group)

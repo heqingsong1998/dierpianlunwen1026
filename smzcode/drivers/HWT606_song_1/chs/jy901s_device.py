@@ -15,7 +15,6 @@ from .utils import (
     angle_zero_calibration,
     apply_angle_baseline
 )
-from .data_recorder import DataRecorder
 
 
 
@@ -41,9 +40,6 @@ class JY901SDevice(JY901SBase):
         self.device.serialConfig.portName = port
         self.device.serialConfig.baud = baud
         
-        # 数据记录器
-        self.recorder = DataRecorder()
-
         # 角度基准值（用于角度清零）
         self.angle_baseline = None
         
@@ -59,7 +55,6 @@ class JY901SDevice(JY901SBase):
     def close(self):
         """关闭设备"""
         self.device.closeDevice()
-        self.recorder.stop()
         self._is_open = False  # 设置状态
         print(f"[INFO] 设备 {self.name} 已关闭")
     
@@ -71,22 +66,11 @@ class JY901SDevice(JY901SBase):
         """写入配置"""
         write_device_config(self.device, **kwargs)
     
-    def start_recording(self, filename: str = None):
-        """开始记录数据"""
-        self.recorder.start(filename)
-    
-    def stop_recording(self):
-        """停止记录数据"""
-        self.recorder.stop()
-    
     def _on_data_update(self, device_model):
         """数据更新回调"""
         # 打印数据
         self._print_data(device_model)
         
-        # 记录数据
-        if self.recorder.is_recording:
-            self.recorder.write(device_model)
         
         # 通知外部回调
         self._notify_callbacks(device_model)

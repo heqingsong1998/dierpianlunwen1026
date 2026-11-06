@@ -1,164 +1,11 @@
 """
-数据显示面板 - 显示四个传感器的实时数据
+数据显示面板 - 显示黏附脚和六轴力传感器的实时数据
 """
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout,
                              QLabel, QGridLayout, QTableWidget,
-                             QTableWidgetItem, QHeaderView, QPushButton)
-from PyQt5.QtCore import Qt, pyqtSignal
+                             QTableWidgetItem, QHeaderView)
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
-
-
-class HWT606DisplayWidget(QWidget):
-    """HWT606传感器数据显示组"""
-    
-    zero_requested = pyqtSignal()
-
-    def __init__(self, sensor_name: str, parent=None):
-        super().__init__(parent)
-        self.sensor_name = sensor_name
-        self._setup_ui()
-        self.set_connected(False)
-    
-    def _setup_ui(self):
-        """设置UI"""
-        layout = QVBoxLayout()
-        layout.setContentsMargins(5, 5, 5, 5)
-        
-        # 标题
-        title = QLabel(f"<b>{self.sensor_name}</b>")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-        
-        # 数据网格
-        grid = QGridLayout()
-        grid.setSpacing(5)
-        
-        # 创建数据标签
-        font = QFont("Courier New", 10)
-        
-        # 加速度
-        acc_label = QLabel("<b>加速度 (g):</b>")
-        grid.addWidget(acc_label, 0, 0)
-        
-        self.acc_x_label = QLabel("X: 0.000")
-        self.acc_x_label.setFont(font)
-        grid.addWidget(self.acc_x_label, 1, 0)
-        
-        self.acc_y_label = QLabel("Y: 0.000")
-        self.acc_y_label.setFont(font)
-        grid.addWidget(self.acc_y_label, 2, 0)
-        
-        self.acc_z_label = QLabel("Z: 0.000")
-        self.acc_z_label.setFont(font)
-        grid.addWidget(self.acc_z_label, 3, 0)
-        
-        # 角速度
-        gyro_label = QLabel("<b>角速度 (°/s):</b>")
-        grid.addWidget(gyro_label, 0, 1)
-        
-        self.gyro_x_label = QLabel("X: 0.000")
-        self.gyro_x_label.setFont(font)
-        grid.addWidget(self.gyro_x_label, 1, 1)
-        
-        self.gyro_y_label = QLabel("Y: 0.000")
-        self.gyro_y_label.setFont(font)
-        grid.addWidget(self.gyro_y_label, 2, 1)
-        
-        self.gyro_z_label = QLabel("Z: 0.000")
-        self.gyro_z_label.setFont(font)
-        grid.addWidget(self.gyro_z_label, 3, 1)
-        
-        # 角度
-        angle_label = QLabel("<b>角度 (°):</b>")
-        grid.addWidget(angle_label, 0, 2)
-        
-        self.angle_x_label = QLabel("Roll: 0.00")
-        self.angle_x_label.setFont(font)
-        grid.addWidget(self.angle_x_label, 1, 2)
-        
-        self.angle_y_label = QLabel("Pitch: 0.00")
-        self.angle_y_label.setFont(font)
-        grid.addWidget(self.angle_y_label, 2, 2)
-        
-        self.angle_z_label = QLabel("Yaw: 0.00")
-        self.angle_z_label.setFont(font)
-        grid.addWidget(self.angle_z_label, 3, 2)
-        
-        self.y_velocity_label = QLabel('Y轴速度：-- mm/s')
-        self.y_velocity_label.setStyleSheet('font-size: 17px; font-weight: bold; color: #155e75;')
-        self.y_velocity_label.setWordWrap(True)
-        self.status_label = QLabel('IMU1 未连接')
-        self.status_label.setWordWrap(True)
-        self.zero_button = QPushButton('已确认静止：标定并将速度归零（约2秒）')
-        self.zero_button.setEnabled(False)
-        self.zero_button.clicked.connect(self.zero_requested.emit)
-        self.frame_label = QLabel('初始水平 Y 方向：正值沿 +Y，负值沿 −Y；短时积分估计')
-        self.frame_label.setWordWrap(True)
-
-        layout.addLayout(grid)
-        for widget in (self.y_velocity_label,self.status_label,self.zero_button,self.frame_label):
-            layout.addWidget(widget)
-        self.setLayout(layout)
-        
-        # 样式
-        self.setStyleSheet("""
-            HWT606DisplayWidget {
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                background-color: #f0f8ff;
-            }
-        """)
-    
-    def update_data(self, data: dict):
-        """
-        更新数据显示
-        
-        Args:
-            data: 数据字典
-        """
-        # 加速度
-        def number(key, digits=3):
-            value = data.get(key)
-            return f'{value:+.{digits}f}' if value is not None else '--'
-        self.acc_x_label.setText('X: '+number('acc_x'))
-        self.acc_y_label.setText('Y: '+number('acc_y'))
-        self.acc_z_label.setText('Z: '+number('acc_z'))
-        
-        # 角速度
-        self.gyro_x_label.setText('X: '+number('gyro_x'))
-        self.gyro_y_label.setText('Y: '+number('gyro_y'))
-        self.gyro_z_label.setText('Z: '+number('gyro_z'))
-        
-        # 角度
-        self.angle_x_label.setText('Roll: '+number('angle_x', 2))
-        self.angle_y_label.setText('Pitch: '+number('angle_y', 2))
-        self.angle_z_label.setText('Yaw: '+number('angle_z', 2))
-
-        # 速度
-        valid = data.get('velocity_valid', False)
-        velocity = data.get('vel_y_mm_s')
-        self.y_velocity_label.setText(f'Y轴速度：{velocity:+.1f} mm/s'
-                                     if valid and velocity is not None else 'Y轴速度：-- mm/s')
-        statuses = {'needs_zero':'请确认静止，然后点击标定／速度归零',
-                    'calibrating':'正在采集静止样本', 'hold_still':'检测到运动或波动，请继续保持静止',
-                    'tracking':'速度估计中', 'gap_requires_zero':'数据中断或缺帧：速度已失效，请静止后重新归零',
-                    'invalid_time':'芯片时间缺失或异常；检查输出，必要时断开并选择按输出周期估计',
-                    'incomplete_frame':'IMU 周期不完整，等待新数据', 'stale':'IMU1 超过0.5秒未更新，速度已失效'}
-        status = data.get('velocity_status','needs_zero')
-        text = statuses.get(status, status)
-        if status == 'calibrating':
-            text += f" {data.get('calibration_progress',0)*100:.0f}%"
-        source = '芯片时间' if data.get('integration_time_source') == 'chip' else '固定周期估计'
-        self.status_label.setText(text+'  |  '+source)
-
-    def set_connected(self, connected):
-        self.zero_button.setEnabled(connected)
-        if connected:
-            self.status_label.setText('IMU1 已连接，等待新帧；请静止后标定／归零')
-        else:
-            self.y_velocity_label.setText('Y轴速度：-- mm/s')
-            self.status_label.setText('IMU1 未连接')
-
 
 
 class LiuZhouLiDisplayWidget(QWidget):
@@ -381,8 +228,6 @@ class DataDisplayPanel(QWidget):
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
 
-        self.hwt606_1_widget = HWT606DisplayWidget('IMU1 · 实时速度估计')
-        layout.addWidget(self.hwt606_1_widget)
         
         # 六轴力传感器
         self.liuzhouli_widget = LiuZhouLiDisplayWidget()
@@ -393,13 +238,6 @@ class DataDisplayPanel(QWidget):
         layout.addWidget(self.nianfujiao_widget)
         
         self.setLayout(layout)
-    
-    def update_hwt606_1_data(self, data: dict):
-        self.hwt606_1_widget.update_data(data)
-    
-    def update_hwt606_2_data(self, data: dict):
-        """兼容旧调用：当前界面不显示 HWT606-2 数据"""
-        return
     
     def update_liuzhouli_data(self, data: dict):
         """更新六轴力数据"""

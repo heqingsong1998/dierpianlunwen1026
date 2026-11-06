@@ -40,7 +40,6 @@ class MainWindow(QMainWindow):
         
         self.config_path = config_path
         self._liuzhouli_zero_busy = False
-        self._proximity_dialog = None
         self._offline_workbench = None
         
         # 创建核心组件
@@ -151,8 +150,6 @@ class MainWindow(QMainWindow):
         self.connection_panel.disconnect_all.connect(self._on_disconnect_all)
 
         # ========== 数据记录回调（高频直接调用，不通过信号） ==========
-        # 各真实 IMU1 新帧直接进入记录器，GUI 仅显示。
-        self.sensor_manager.record_callback_hwt606_1 = self.data_recorder.write_hwt606_data
         self.sensor_manager.record_callback_nianfujiao = self.data_recorder.write_nianfujiao_data
         self.sensor_manager.record_callback_liuzhouli = self.data_recorder.write_liuzhouli_data
         self.sensor_manager.record_callback_nianfujiao_aux = self.data_recorder.write_nianfujiao_aux
@@ -178,7 +175,6 @@ class MainWindow(QMainWindow):
         self.control_panel.controller_start.connect(self._on_controller_start)
         self.control_panel.controller_stop.connect(self._on_controller_stop)
         self.control_panel.controller_reload_calibration.connect(self._on_controller_reload)
-        self.control_panel.proximity_view_requested.connect(self._on_show_proximity)
         self.sensor_manager.controller_updated.connect(self.control_panel.update_controller_status)
         
         # 六轴力
@@ -187,8 +183,6 @@ class MainWindow(QMainWindow):
         )
         
         # ========== 数据更新信号 ==========
-        self.sensor_manager.hwt606_1_data_updated.connect(self._on_hwt606_1_data_updated)
-        self.data_display_panel.hwt606_1_widget.zero_requested.connect(self._on_imu1_zero)
         self.sensor_manager.nianfujiao_data_updated.connect(
             self._on_nianfujiao_data_updated
         )
@@ -231,30 +225,6 @@ class MainWindow(QMainWindow):
         self._offline_workbench.show()
         self._offline_workbench.raise_()
         self._offline_workbench.activateWindow()
-
-    def _on_show_proximity(self):
-        """按需打开只读显示窗口；重复点击复用窗口，不占用真实采集回调。"""
-        if self._proximity_dialog is None:
-            try:
-                from controller.visualization.proximity_view import ProximityViewDialog
-                self._proximity_dialog = ProximityViewDialog(self)
-            except ImportError as exc:
-                QMessageBox.warning(self, '接近觉显示依赖未安装',
-                                    f'{exc}\n请在当前 Python 环境安装绘图库：\n'
-                                    f'& "{sys.executable}" -m pip install matplotlib==3.10.7')
-                return
-            except Exception as exc:
-                print(f'[ERROR] 接近觉窗口创建失败: {exc}')
-                QMessageBox.warning(self, '接近觉显示', f'窗口创建失败：{exc}')
-                return
-        connected = self.sensor_manager.connection_status.get('nianfujiao', False)
-        self._proximity_dialog.set_connected(connected)
-        latest = self.sensor_manager.latest_data['nianfujiao'].get(0)
-        if connected and latest is not None:
-            self._proximity_dialog.update_sample(latest)
-        self._proximity_dialog.show()
-        self._proximity_dialog.raise_()
-        self._proximity_dialog.activateWindow()
 
     def _on_controller_apply(self, values):
         try:
@@ -304,8 +274,6 @@ class MainWindow(QMainWindow):
             success = self.sensor_manager.connect_nianfujiao()
         elif sensor_id == 'liuzhouli':
             success = self.sensor_manager.connect_liuzhouli()
-        elif sensor_id == 'hwt606_1':
-            success = self._connect_imu1()
         
         self.connection_panel.set_all_busy(False)
         
@@ -320,8 +288,6 @@ class MainWindow(QMainWindow):
             self.sensor_manager.disconnect_nianfujiao()
         elif sensor_id == 'liuzhouli':
             self.sensor_manager.disconnect_liuzhouli()
-        elif sensor_id == 'hwt606_1':
-            self.sensor_manager.disconnect_hwt606_1()
         
         QMessageBox.information(self, "成功", f"{sensor_id} 已断开！")
     
@@ -332,7 +298,6 @@ class MainWindow(QMainWindow):
         results = {
             'nianfujiao': self.sensor_manager.connect_nianfujiao(),
             'liuzhouli': self.sensor_manager.connect_liuzhouli(),
-            'hwt606_1': self._connect_imu1(),
         }
         
         self.connection_panel.set_all_busy(False)
@@ -347,22 +312,6 @@ class MainWindow(QMainWindow):
                 f"成功: {success_count}/{len(results)}\n失败: {', '.join(failed)}"
             )
 
-    def _connect_imu1(self):
-        options = self.connection_panel.sensor_widgets['hwt606_1'].connection_options()
-        config = self.sensor_manager.config['sensor']['hwt606_1']
-        config.update(port=options['port'], baud=options['baud'])
-        config.setdefault('velocity', {})['time_source'] = options['time_source']
-        return self.sensor_manager.connect_hwt606_1()
-
-    def _on_imu1_zero(self):
-        try:
-            self.sensor_manager.zero_imu1_velocity()
-            widget = self.data_display_panel.hwt606_1_widget
-            widget.update_data({'velocity_status':'calibrating',
-                                'integration_time_source':self.sensor_manager.imu1_velocity.settings.time_source})
-        except Exception as exc:
-            QMessageBox.warning(self, 'IMU1 速度归零', str(exc))
-    
     def _on_disconnect_all(self):
         """断开所有传感器"""
         # 如果正在采集，先停止
@@ -392,16 +341,12 @@ class MainWindow(QMainWindow):
         """传感器连接状态变化"""
         # 更新连接面板状态
         self.connection_panel.update_sensor_status(sensor_id, connected)
-        if sensor_id == 'hwt606_1':
-            self.data_display_panel.hwt606_1_widget.set_connected(connected)
         
         # 更新控制面板按钮状态
         self.control_panel.update_button_states(
             self.sensor_manager.get_all_status()
         )
         self._update_liuzhouli_zero_button()
-        if sensor_id == 'nianfujiao' and self._proximity_dialog is not None:
-            self._proximity_dialog.set_connected(connected)
     
     def _on_sensor_error(self, sensor_id: str, error_msg: str):
         """传感器错误"""
@@ -469,24 +414,9 @@ class MainWindow(QMainWindow):
     
     # ==================== 数据更新槽函数 ====================
     
-    def _on_hwt606_1_data_updated(self, data: dict):
-        """HWT606-1数据更新"""
-        # 更新显示
-        self.data_display_panel.update_hwt606_1_data(data)
-        
-    
-    def _on_hwt606_2_data_updated(self, data: dict):
-        """HWT606-2数据更新"""
-        self.data_display_panel.update_hwt606_2_data(data)
-        
-        if self.data_recorder.is_recording:
-            self.data_recorder.write_hwt606_data('hwt606_2', data)
-    
     def _on_nianfujiao_data_updated(self, style: int, data: dict):
         """粘附脚数据更新"""
         self.data_display_panel.update_nianfujiao_data(style, data)
-        if style == 0 and self._proximity_dialog is not None:
-            self._proximity_dialog.update_sample(data)
         
     
     def _on_liuzhouli_data_updated(self, data: dict):
@@ -515,7 +445,6 @@ class MainWindow(QMainWindow):
         # 启动数据记录
         if self.data_recorder.start_recording():
             self.data_recorder.write_controller_snapshot(self.sensor_manager.controller.snapshot())
-            self.data_recorder.write_imu1_snapshot(self.sensor_manager.imu1_snapshot())
             self._update_liuzhouli_zero_button()
             # 更新存储路径
             session_path = self.data_recorder.get_session_path()
@@ -609,8 +538,6 @@ class MainWindow(QMainWindow):
             # 停止采集
             self.data_recorder.stop_recording()
         
-        if self._proximity_dialog is not None:
-            self._proximity_dialog.close()
         if self._offline_workbench is not None:
             self._offline_workbench.close()
         # 断开所有传感器

@@ -1,13 +1,11 @@
 """
 HWT606姿态传感器调试程序
-使用配置文件管理参数
+使用独立参考配置，仅在终端显示解析结果
 """
 import sys
 import os
 import time
 import yaml
-import csv
-from datetime import datetime
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -22,7 +20,7 @@ def load_config():
     config_path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)), 
         "config", 
-        "default.yaml"
+        "imu_reference.yaml"
     )
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -40,8 +38,6 @@ def main():
     """主函数"""
     print("=== HWT606姿态传感器调试程序 ===\n")
     sensor = None  # 在异常情况下也能安全关闭
-    csv_file = None
-    csv_writer = None
     try:
         # 加载配置
         config = load_config()
@@ -64,52 +60,6 @@ def main():
         # 打开设备
         sensor.open()
 
-        # ==== CSV 日志准备 ====
-        log_name = f"hwt606_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), log_name)
-        csv_file = open(csv_path, "w", newline="", encoding="utf-8")
-        csv_writer = csv.writer(csv_file)
-        csv_writer.writerow([
-            "timestamp",
-            "elapsed_ms",
-            "angleX",
-            "angleY",
-            "angleZ",
-            "accX",
-            "accY",
-            "accZ",
-            "gyroX",
-            "gyroY",
-            "gyroZ",
-            "temperature",
-        ])
-        start_time = time.time()
-        print(f"[LOG] CSV logging to {csv_path}")
-
-        def on_data(device_model):
-            """数据回调：写入一行带时间戳的数据到 CSV。"""
-            now = datetime.now()
-            elapsed_ms = (time.time() - start_time) * 1000.0
-            row = [
-                "'" + now.strftime("%Y-%m-%d %H:%M:%S.%f"),
-                f"{elapsed_ms:.3f}",
-                device_model.getDeviceData("angleX") or 0.0,
-                device_model.getDeviceData("angleY") or 0.0,
-                device_model.getDeviceData("angleZ") or 0.0,
-                device_model.getDeviceData("accX") or 0.0,
-                device_model.getDeviceData("accY") or 0.0,
-                device_model.getDeviceData("accZ") or 0.0,
-                device_model.getDeviceData("gyroX") or 0.0,
-                device_model.getDeviceData("gyroY") or 0.0,
-                device_model.getDeviceData("gyroZ") or 0.0,
-                device_model.getDeviceData("temperature") or 0.0,
-            ]
-            csv_writer.writerow(row)
-            csv_file.flush()
-
-        # 注册回调，持续写入 CSV
-        sensor.register_callback(on_data)
-        
         print("[INFO] 等待设备初始化和数据稳定...")
         countdown(debug_config['init_wait'], "初始化")
 
@@ -191,7 +141,7 @@ def main():
         input("\n✅ 测试完成！按回车键退出...")
         
     except FileNotFoundError:
-        print("❌ 配置文件未找到: config/default.yaml")
+        print("❌ 配置文件未找到: config/imu_reference.yaml")
         print("   请确保配置文件存在")
     
     except KeyError as e:
@@ -210,12 +160,6 @@ def main():
         if sensor is not None:
             try:
                 sensor.close()
-            except Exception:
-                pass
-        if csv_file is not None:
-            try:
-                csv_file.close()
-                print(f"[LOG] CSV saved to {csv_path}")
             except Exception:
                 pass
 

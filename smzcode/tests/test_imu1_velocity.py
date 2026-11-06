@@ -1,22 +1,14 @@
-"""IMU1 合成动力学、真实协议到 CSV 和界面路由；不连接硬件。"""
-import csv
-import json
-import math
-import os
+"""保留的 IMU 解析与速度估计算法；不连接硬件、不保存数据。"""
 from pathlib import Path
 import struct
 import sys
-import tempfile
 import unittest
-from unittest.mock import patch
 
 import numpy as np
 
-os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from core.imu_velocity import ImuVelocityEstimator, VelocitySettings, body_to_world
-from core.data_recorder import DataRecorder, IMU1_COLUMNS
 from drivers.HWT606_song_1.chs.jy901s_device import JY901SDevice
 
 
@@ -123,11 +115,22 @@ class VelocityAlgorithmTests(unittest.TestCase):
         self.assertEqual(result['integration_time_source'],'nominal')
 
 
-class ImuPipelineTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        from PyQt5.QtWidgets import QApplication
-        cls.app = QApplication.instance() or QApplication([])
+class ImuParsingTests(unittest.TestCase):
+    def test_both_driver_packages_parse_and_notify_without_data_recorders(self):
+        from drivers.HWT606_song_2.chs import JY901SDevice as LegacyDevice
+        for driver in (JY901SDevice, LegacyDevice):
+            with self.subTest(driver=driver.__module__):
+                sensor = driver(port='MOCK')
+                snapshots = []
+                sensor.register_callback(lambda model: snapshots.append(model.getDeviceData('accY')))
+                payload = wire_cycle(1, .1) + packet(0x54, struct.pack('<hhhh', 1, 2, 3, 4))
+                for value in payload:
+                    sensor.device.onDataReceived(bytes([value]))
+                self.assertAlmostEqual(sensor.device.getDeviceData('accY'), 21/32768*16, places=4)
+                self.assertTrue(snapshots)
+                self.assertFalse(hasattr(sensor, 'recorder'))
+                self.assertFalse(hasattr(sensor, 'start_recording'))
+                self.assertFalse(hasattr(sensor, 'stop_recording'))
 
     def test_split_real_packets_once_per_cycle_and_incomplete_cycle_is_invalid(self):
         device = JY901SDevice(port='MOCK')
@@ -142,120 +145,6 @@ class ImuPipelineTests(unittest.TestCase):
         self.assertEqual(snapshots[0]['acc_y'],21/32768*16)
         self.assertIsNot(device.device.protocolResolver.TempBytes,
                          JY901SDevice(port='OTHER').device.protocolResolver.TempBytes)
-
-    def test_protocol_to_velocity_csv_without_six_axis_and_gui_does_not_duplicate(self):
-        from gui.main_window import MainWindow
-        window = MainWindow(str(ROOT/'config/default.yaml'))
-        manager = window.sensor_manager
-        device = JY901SDevice(port='MOCK')
-        manager.hwt606_1 = device
-        manager.connection_status['hwt606_1'] = True
-        device.register_callback(lambda model:manager._on_imu1_sample(device,model))
-        with tempfile.TemporaryDirectory() as temp:
-            window.data_recorder.base_dir = temp
-            try:
-                with patch('gui.main_window.QMessageBox.information'):
-                    window._on_start_recording()
-                self.assertTrue(window.data_recorder.is_recording)
-                path = Path(window.data_recorder.session_dir)
-                manager.zero_imu1_velocity()
-                # 模拟串口集中交付：接收时刻几乎相同，积分仍用芯片周期。
-                with patch('time.perf_counter_ns', return_value=10**12):
-                    for seq in range(1, 611):
-                        acceleration = .1 if 211 <= seq <= 310 else -.1 if seq >= 411 else 0.
-                        device.device.onDataReceived(wire_cycle(seq, acceleration))
-                latest = manager.latest_data['hwt606_1']
-                self.assertTrue(latest['velocity_valid'])
-                self.assertAlmostEqual(latest['vel_y_mm_s'],-100.,delta=5.)
-                for _ in range(10):
-                    manager._update_display()
-                self.assertIn('--',window.data_display_panel.hwt606_1_widget.y_velocity_label.text())
-                window.data_recorder.stop_recording()
-                with (path/'hwt606_1.csv').open(encoding='utf8') as handle:
-                    reader = csv.DictReader(handle); rows = list(reader)
-                    self.assertEqual(reader.fieldnames,['timestamp',*IMU1_COLUMNS])
-                    self.assertTrue({'vel_x','vel_y','vel_z','speed_mps'}.isdisjoint(reader.fieldnames))
-                self.assertEqual(len(rows),610)
-                self.assertEqual(rows[0]['vel_y_mm_s'],'')
-                self.assertEqual(rows[0]['velocity_valid'],'False')
-                self.assertEqual(rows[-1]['velocity_valid'],'True')
-                self.assertAlmostEqual(float(rows[310]['vel_y_mm_s']),100.,delta=5.)
-                self.assertAlmostEqual(float(rows[-1]['vel_y_mm_s']),latest['vel_y_mm_s'])
-                self.assertEqual(json.loads((path/'imu1_velocity_config.json').read_text(encoding='utf8'))
-                                 ['estimator']['velocity_output'],
-                                 {'axis':'Y','unit':'mm/s','field':'vel_y_mm_s'})
-                first_path = path
-                self.assertTrue(window.data_recorder.start_recording())
-                window.data_recorder.stop_recording()
-                with (Path(window.data_recorder.session_dir)/'hwt606_1.csv').open(encoding='utf8') as handle:
-                    self.assertEqual(len(list(csv.DictReader(handle))),0)
-                self.assertTrue((first_path/'hwt606_1.csv').is_file())
-            finally:
-                if window.data_recorder.is_recording:
-                    window.data_recorder.stop_recording()
-                manager.hwt606_1 = None
-                manager.display_timer.stop(); manager.controller.stop()
-                window.stats_timer.stop(); window.recording_panel.duration_timer.stop()
-                window.log_widget.stop_capture(); window.deleteLater(); self.app.processEvents()
-
-    def test_port_settings_zero_control_and_reconnect_reset(self):
-        from gui.main_window import MainWindow
-        window = MainWindow(str(ROOT/'config/default.yaml'))
-        manager = window.sensor_manager
-        try:
-            panel = window.connection_panel.sensor_widgets['hwt606_1']
-            panel.port_combo.setCurrentText('COM99'); panel.baud_combo.setCurrentText('115200')
-            panel.clock_combo.setCurrentIndex(1)
-            with patch.object(manager,'connect_hwt606_1',return_value=True):
-                self.assertTrue(window._connect_imu1())
-            self.assertEqual(manager.config['sensor']['hwt606_1']['port'],'COM99')
-            self.assertEqual(manager.config['sensor']['hwt606_1']['velocity']['time_source'],'nominal')
-            window._on_sensor_status_changed('hwt606_1',True)
-            self.assertFalse(panel.port_combo.isEnabled())
-            self.assertTrue(window.data_display_panel.hwt606_1_widget.zero_button.isEnabled())
-            manager.connection_status['hwt606_1'] = True
-            window.data_display_panel.hwt606_1_widget.zero_button.click()
-            self.assertEqual(manager.imu1_velocity.snapshot()['state'],'calibrating')
-            with patch('core.sensor_manager.JY901SDevice1') as driver, \
-                    patch('core.sensor_manager.write_cfg_1') as configure:
-                manager.connection_status['hwt606_1'] = False
-                self.assertTrue(manager.connect_hwt606_1())
-                self.assertEqual(manager.imu1_velocity.snapshot()['state'],'needs_zero')
-                self.assertIsNone(manager._unified_thread)
-                self.assertEqual(configure.call_args.kwargs['output_content'],15)
-                self.assertEqual(configure.call_args.kwargs['rate'],9)
-                self.assertTrue(driver.return_value.register_callback.called)
-                manager.disconnect_hwt606_1()
-            self.assertIsNone(manager.latest_data['hwt606_1'])
-        finally:
-            manager.display_timer.stop(); manager.controller.stop()
-            window.log_widget.stop_capture(); window.deleteLater(); self.app.processEvents()
-
-    def test_y_velocity_display_keeps_sign_and_mm_s_and_hides_invalid_value(self):
-        from gui.panels.data_display_panel import HWT606DisplayWidget
-        widget = HWT606DisplayWidget('IMU1')
-        try:
-            for value in (100.,-100.):
-                widget.update_data({'vel_y_mm_s':value,'velocity_valid':True})
-                self.assertEqual(widget.y_velocity_label.text(),f'Y轴速度：{value:+.1f} mm/s')
-            widget.update_data({'vel_y_mm_s':100.,'velocity_valid':False})
-            self.assertEqual(widget.y_velocity_label.text(),'Y轴速度：-- mm/s')
-        finally:
-            widget.deleteLater(); self.app.processEvents()
-
-    def test_serial_open_failure_leaves_no_connected_sensor(self):
-        from core.sensor_manager import SensorManager
-        from serial import SerialException
-        manager = SensorManager(str(ROOT/'config/default.yaml'))
-        try:
-            with patch('drivers.HWT606_song_1.chs.lib.device_model.serial.Serial',
-                       side_effect=SerialException('port busy')):
-                self.assertFalse(manager.connect_hwt606_1())
-            self.assertFalse(manager.connection_status['hwt606_1'])
-            self.assertIsNone(manager.hwt606_1)
-            self.assertIsNone(manager.latest_data['hwt606_1'])
-        finally:
-            manager.display_timer.stop(); manager.controller.stop(); manager.deleteLater()
 
 
 if __name__ == '__main__':

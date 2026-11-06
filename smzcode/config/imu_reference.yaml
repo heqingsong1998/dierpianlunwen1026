@@ -1,0 +1,33 @@
+# IMU 独立驱动复用参数；主界面不加载此文件。
+sensor:
+  # HWT606姿态传感器 - 传感器1
+  hwt606_1:
+    type: "hwt606"
+    name: "HWT606传感器1"
+    port: "COM12"
+    baud: 921600
+    write_config1:
+      rate: 9                 # WIT RRATE 0x09=100Hz；0x0B=200Hz
+      direction_h_v: 0        # 水平放置
+      direction_axis: 0       # 正常方向
+    velocity:
+      time_source: chip       # chip=芯片时间，nominal=按配置周期估计
+      gravity: 9.80665
+      calibration_s: 2.0      # 人工确认静止后，收集连续静止样本
+
+  # HWT606姿态传感器 - 传感器2
+  hwt606_2:
+    type: "hwt606"
+    name: "HWT606传感器2"
+    port: "COM13"
+    baud: 921600
+    write_config2:
+      rate: 11                # WIT RRATE 0x0B=200Hz
+      direction_h_v: 0        # 水平放置
+      direction_axis: 0       # 正常方向
+
+debug:
+  # HWT606调试参数
+  hwt606:
+    init_wait: 3
+    step_wait: 5

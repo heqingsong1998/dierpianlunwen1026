@@ -58,20 +58,16 @@ controller/
 │   └── threshold.py
 ├── config/                       # 实验参数
 │   ├── calibration.json
-│   ├── settings.json
-│   └── proximity_layout.json
+│   └── settings.json
 ├── offline/                      # 固定周期重建、联合标定、报告及命令行
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── workflow.py
 │   └── report.py
-├── visualization/                # 接近觉显示和离线分析窗口
+├── visualization/                # 离线分析窗口
 │   ├── __init__.py
-│   ├── proximity_data.py
-│   ├── proximity_view.py
 │   └── offline_workbench.py
 └── docs/
-    ├── proximity_view.md
     └── offline_analysis.md
 ```
 
@@ -84,14 +80,9 @@ controller/
 | `config/calibration.json` | 旧分量参数、normal_force 联合系数及模型编号 |
 | `algorithms/threshold.py` | 总法向力单阈值判据及参数读写 |
 | `config/settings.json` | 总法向力阈值 threshold_total_n 和触发电平 |
-| `visualization/proximity_data.py` | 四路接近觉数据提取、四角位置及信号差计算 |
-| `visualization/proximity_view.py` | 独立的接近觉 2×2 三维柱状图窗口 |
-| `config/proximity_layout.json` | 接近觉俯视图的四角通道位置配置 |
 | `offline/workflow.py` | 固定周期重建、线性插值配对、整次实验留出、备份应用配置 |
 | `offline/report.py` | 重建 CSV、候选配置、PNG/SVG 及 HTML 报告 |
 | `visualization/offline_workbench.py` | 选择多个会话、设置周期和偏移、一键标定与手动应用 |
-
-主界面“粘附脚传感器”下的“接近觉 2×2 三维图”按钮可打开实时显示，用于手动调整姿态。显示操作与控制器启停、数据采集独立，使用方法及信号含义见 [接近觉显示说明](docs/proximity_view.md)。
 
 主界面“数据采集控制”下的 **“离线分析：时间轴重建／总力标定”** 可打开离线工具。停止采集和控制器后，选择会话，设置六轴／足端周期及每次实验的起点偏移，即可重建、绘图和导出；也可重新计算联合系数、查看训练和整次实验留出误差，再手动应用。原始文件保留，计算结果另存。详细步骤、导出列及假设见 [离线分析说明](docs/offline_analysis.md)。
 
@@ -99,7 +90,7 @@ controller/
 
 旧 settings.json 若只包含两片阈值，加载时会将两者之和作为初始总阈值；点击保存后只保留新字段。迁移值不保证与旧控制行为相同，需要重新设定实验阈值。
 
-三个配置文件统一保存在 `config/`，加载路径相对于模块文件定位，不依赖启动时的工作目录。保存阈值和保存显示位置也会写回该目录。
+两个配置文件统一保存在 `config/`，加载路径相对于模块文件定位，不依赖启动时的工作目录。保存阈值也会写回该目录。
 
 输入队列最多 8 帧，过载时丢最旧待处理帧并计数；超过 500 ms 的旧输入不会发送命令。串口发送失败、下位机拒绝命令或触发命令 1 秒无回执会停止控制器，在界面显示原因。启动要求最近 500 ms 收到过版本 1 的 0x124 帧。Windows/Python 的线程调度不提供硬实时保证，应使用实验记录评估实际时延。
 

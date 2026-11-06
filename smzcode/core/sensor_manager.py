@@ -1,5 +1,5 @@
 """
-传感器管理器 - 统一管理四个传感器的连接和数据流
+传感器管理器 - 管理黏附脚、六轴力传感器的连接和数据流
 """
 import yaml
 import os
@@ -12,38 +12,22 @@ from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-# 🔧 使用两个独立的库文件夹，避免类变量共享问题
-from drivers.HWT606_song_1.chs.jy901s_device import JY901SDevice as JY901SDevice1
-from drivers.HWT606_song_2.chs.jy901s_device import JY901SDevice as JY901SDevice2
-
-print(f"[VERIFY] JY901SDevice1 来自: {JY901SDevice1.__module__}")
-print(f"[VERIFY] JY901SDevice2 来自: {JY901SDevice2.__module__}")
-print(f"[VERIFY] 两个类是否相同? {JY901SDevice1 is JY901SDevice2}")
-
 from drivers.nianfujiao_song import NianFuJiaoDevice
 from drivers.sensors.utils import create_sensor, initialize_sensor
 from controller.algorithms.calibration import raw_from_sample
 from controller.worker import FootController
-from core.imu_velocity import ImuVelocityEstimator, VelocitySettings
 
-
-from drivers.HWT606_song_1.chs.utils import write_device_config as write_cfg_1
-from drivers.HWT606_song_2.chs.utils import write_device_config as write_cfg_2
 
 class SensorManager(QObject):
     """传感器管理器"""
 
     # 信号定义（用于 GUI 显示）
-    hwt606_1_data_updated = pyqtSignal(dict)
-    hwt606_2_data_updated = pyqtSignal(dict)
     nianfujiao_data_updated = pyqtSignal(int, dict)  # (style, data)
     liuzhouli_data_updated = pyqtSignal(dict)
     nianfujiao_protocol_updated = pyqtSignal(dict)
     controller_updated = pyqtSignal(dict)
 
     # 数据记录信号（目前设计是通过回调直接写 CSV，此处可不用）
-    hwt606_1_data_record = pyqtSignal(dict)
-    hwt606_2_data_record = pyqtSignal(dict)
     nianfujiao_data_record = pyqtSignal(int, dict)
     liuzhouli_data_record = pyqtSignal(dict)
 
@@ -57,8 +41,6 @@ class SensorManager(QObject):
         self.config = self._load_config(config_path)
 
         # 传感器实例
-        self.hwt606_1: Optional[JY901SDevice1] = None
-        self.hwt606_2: Optional[JY901SDevice2] = None
         self.nianfujiao: Optional[NianFuJiaoDevice] = None
         self.liuzhouli = None
 
@@ -70,8 +52,6 @@ class SensorManager(QObject):
 
         # 连接状态
         self.connection_status: Dict[str, bool] = {
-            'hwt606_1': False,
-            'hwt606_2': False,
             'nianfujiao': False,
             'liuzhouli': False,
         }
@@ -95,17 +75,12 @@ class SensorManager(QObject):
 
         # 最新数据缓存（用于 GUI 10Hz 显示）
         self.latest_data = {
-            'hwt606_1': None,
-            'hwt606_2': None,
             'nianfujiao': {0: None},
             'liuzhouli': None,
         }
         # 六轴力最新原始样本（来自驱动 drain_samples）
         self._liuzhouli_last_sample = None
 
-        self.record_callback_hwt606_1 = None
-        self.record_callback_hwt606_2 = None
-        self.imu1_velocity = ImuVelocityEstimator()
         self.record_callback_nianfujiao = None
         self.record_callback_liuzhouli = None
         self.record_callback_nianfujiao_aux = None
@@ -121,44 +96,6 @@ class SensorManager(QObject):
         self._nianfujiao_on_change_only = bool(
             liuzhouli_cfg.get('nianfujiao_on_change_only', False)
         )
-
-        # 调试计数
-        self._debug_print_counts = {
-            'hwt606_1': 0,
-            'hwt606_2': 0,
-            'liuzhouli': 0,
-        }
-        self._hwt606_1_debug_count = 0
-        self._hwt606_2_debug_count = 0
-
-        # HWT606 速度积分缓存
-        self._hwt606_last_ts_ms = {
-            'hwt606_1': None,
-            'hwt606_2': None,
-        }
-        self._hwt606_velocity = {
-            'hwt606_1': {'vx': 0.0, 'vy': 0.0, 'vz': 0.0},
-            'hwt606_2': {'vx': 0.0, 'vy': 0.0, 'vz': 0.0},
-        }
-
-                # HWT606 滑动偏置估计（单位：g），慢慢逼近“偏置 + 重力”
-        self._hwt606_bias_g = {
-            'hwt606_1': {'ax': 0.0, 'ay': 0.0, 'az': 1.0},
-            'hwt606_2': {'ax': 0.0, 'ay': 0.0, 'az': 1.0},
-        }
-
-        # 上一帧净加速度（单位：m/s^2），用于梯形积分
-        self._hwt606_last_acc = {
-            'hwt606_1': {'ax': 0.0, 'ay': 0.0, 'az': 0.0},
-            'hwt606_2': {'ax': 0.0, 'ay': 0.0, 'az': 0.0},
-        }
-
-        # 滑动估计偏置的参数
-        # alpha 越小，偏置变化越慢（更平稳），可以根据效果调 0.005~0.02
-        self._hwt606_bias_alpha = 0.01
-
-        # “接近静止”的阈值（单位：g），偏离慢平均小于这个值时才更新偏置
-        self._hwt606_quiet_threshold_g = 0.05
 
     # ==================== 配置 ====================
 
@@ -180,8 +117,7 @@ class SensorManager(QObject):
             return
 
         # 没有任何需要统一采集的传感器则不启动
-        if not (self.connection_status['hwt606_2'] or
-                self.connection_status['liuzhouli'] or
+        if not (self.connection_status['liuzhouli'] or
                 self.connection_status['nianfujiao']):
             return
 
@@ -199,8 +135,7 @@ class SensorManager(QObject):
 
     def _maybe_stop_unified_thread(self):
         """当所有需要统一采集的传感器都断开时，停止统一采集线程"""
-        if (self.connection_status['hwt606_2'] or
-                self.connection_status['liuzhouli'] or
+        if (self.connection_status['liuzhouli'] or
                 self.connection_status['nianfujiao']):
             return
 
@@ -311,22 +246,6 @@ class SensorManager(QObject):
                         print(f"[ERROR] 统一线程 六轴力写入失败: {e}")
                         traceback.print_exc()
 
-                    # -------- HWT606-2：在同一 now_ms 下抓取一次 --------
-                    try:
-                        if self.hwt606_2 and self.connection_status['hwt606_2']:
-                            data2 = self._get_hwt606_data(self.hwt606_2)
-                            data2['timestamp_ms'] = now_ms
-
-                            # ★ 计算速度并写回 data2
-                            self._update_hwt606_velocity('hwt606_2', data2)
-                            self.latest_data['hwt606_2'] = data2
-
-                            if self.record_callback_hwt606_2:
-                                self.record_callback_hwt606_2('hwt606_2', data2)
-                    except Exception as e:
-                        print(f"[ERROR] 统一线程 HWT606-2 采集失败: {e}")
-                        traceback.print_exc()
-
                     # -------- 粘附脚：用缓存 + 对齐时间写入 --------
                     try:
                         if self.nianfujiao and self.connection_status['nianfujiao']:
@@ -376,172 +295,6 @@ class SensorManager(QObject):
 
 
     # ==================== 连接管理 ====================
-
-    # -------- HWT606-1 --------
-
-    def connect_hwt606_1(self) -> bool:
-        """连接 HWT606-1 传感器"""
-        try:
-            if self.hwt606_1 and self.connection_status['hwt606_1']:
-                return True
-            config = self.config['sensor']['hwt606_1']
-            cfg = config.get('write_config1', {})
-            rate = int(cfg.get('rate', 9))
-            periods = {1:5000.,2:2000.,3:1000.,4:500.,5:200.,6:100.,7:50.,8:20.,9:10.,11:5.}
-            if rate not in periods:
-                raise ValueError('IMU1 输出频率寄存器不支持，请使用 9（100Hz）或 11（200Hz）等有效值')
-            self.imu1_velocity = ImuVelocityEstimator(VelocitySettings(
-                period_ms=periods[rate], **config.get('velocity', {})))
-            self.latest_data['hwt606_1'] = None
-            print("[DEBUG] 创建 HWT606-1 实例，使用库1 (JY901SDevice1)")
-            self.hwt606_1 = JY901SDevice1(
-                name=config.get('name', 'HWT606-1'),
-                port=config['port'],
-                baud=config['baud'],
-            )
-            sensor = self.hwt606_1
-            sensor.register_callback(lambda model: self._on_imu1_sample(sensor, model))
-            print(f"[DEBUG] HWT606-1 实例创建成功: device={id(self.hwt606_1.device)}, "
-                  f"deviceData={id(self.hwt606_1.device.deviceData)}")
-            
-            self.hwt606_1.open()
-            write_cfg_1(self.hwt606_1.device,
-                rate=rate,
-                direction_h_v=cfg.get('direction_h_v', 0),
-                direction_axis=cfg.get('direction_axis', 0),
-                output_content=0x000F)  # TIME/ACC/GYRO/ANGLE，每周期一次快照。
-            
-            self.connection_status['hwt606_1'] = True
-            self.connection_status_changed.emit('hwt606_1', True)
-
-            if not self.display_timer.isActive():
-                self.display_timer.start()
-
-            print(f"[INFO] IMU1 已连接: {config['port']}，逐帧记录；请静止后进行速度归零")
-            return True
-
-        except Exception as e:
-            error_msg = f"连接失败: {str(e)}"
-            print(f"[ERROR] HWT606-1 {error_msg}")
-            self.connection_status['hwt606_1'] = False
-            if self.hwt606_1 is not None:
-                try:
-                    self.hwt606_1.close()
-                except Exception:
-                    pass
-                self.hwt606_1 = None
-            self.connection_status_changed.emit('hwt606_1', False)
-            self.error_occurred.emit('hwt606_1', error_msg)
-            return False
-
-    def disconnect_hwt606_1(self):
-        """断开 HWT606-1 连接"""
-        if not self.hwt606_1:
-            return
-
-        self.connection_status['hwt606_1'] = False
-
-        try:
-            self.hwt606_1.close()
-        except Exception as e:
-            print(f"[WARN] HWT606-1 关闭失败: {e}")
-
-        self.hwt606_1 = None
-        self.latest_data['hwt606_1'] = None
-        self.connection_status_changed.emit('hwt606_1', False)
-        print("[INFO] HWT606-1 已断开")
-
-        self._maybe_stop_unified_thread()
-
-    def _on_imu1_sample(self, sensor, model):
-        """串口解析线程的逐周期快照；不依赖六轴，不从 GUI 刷新中写入。"""
-        if self.hwt606_1 is not sensor or not self.connection_status['hwt606_1']:
-            return
-        sample = getattr(model, 'imu_sample', None)
-        if sample is None:
-            return
-        data = self.imu1_velocity.update(sample)
-        if data is None:
-            return
-        self.latest_data['hwt606_1'] = data
-        if self.record_callback_hwt606_1:
-            self.record_callback_hwt606_1('hwt606_1', data)
-
-    def zero_imu1_velocity(self):
-        if not self.connection_status['hwt606_1']:
-            raise ValueError('请先连接 IMU1')
-        self.imu1_velocity.request_zero()
-        if self.latest_data['hwt606_1'] is not None:
-            self.latest_data['hwt606_1'] = dict(self.latest_data['hwt606_1'],
-                velocity_valid=False, velocity_status='calibrating', calibration_progress=0.)
-
-    def imu1_snapshot(self):
-        return {'connection': dict(self.config['sensor']['hwt606_1']),
-                'connected': self.connection_status['hwt606_1'],
-                'estimator': self.imu1_velocity.snapshot()}
-
-    # -------- HWT606-2 --------
-
-    def connect_hwt606_2(self) -> bool:
-        """连接 HWT606-2 传感器"""
-        try:
-            config = self.config['sensor']['hwt606_2']
-            print("[DEBUG] 创建 HWT606-2 实例，使用库2 (JY901SDevice2)")
-            self.hwt606_2 = JY901SDevice2(
-                name=config.get('name', 'HWT606-2'),
-                port=config['port'],
-                baud=config['baud'],
-            )
-            print(f"[DEBUG] HWT606-2 实例创建成功: device={id(self.hwt606_2.device)}, "
-                  f"deviceData={id(self.hwt606_2.device.deviceData)}")
-            self.hwt606_2.open()
-
-
-            cfg = config.get("write_config2", {})   
-            try:
-                write_cfg_2(self.hwt606_2.device,
-                rate=cfg.get('rate', 11),
-                direction_h_v=cfg.get('direction_h_v', 0),
-                direction_axis=cfg.get('direction_axis', 0))
-            except Exception as e:
-                print(f"[WARN] HWT606-2 写配置失败: {e}")
-
-            self.connection_status['hwt606_2'] = True
-            self.connection_status_changed.emit('hwt606_2', True)
-
-            self._ensure_unified_thread_started()
-
-            if not self.display_timer.isActive():
-                self.display_timer.start()
-
-            print(f"[INFO] HWT606-2 已连接: {config['port']}，由统一采集线程接管采集")
-            return True
-
-        except Exception as e:
-            error_msg = f"连接失败: {str(e)}"
-            print(f"[ERROR] HWT606-2 {error_msg}")
-            self.connection_status['hwt606_2'] = False
-            self.connection_status_changed.emit('hwt606_2', False)
-            self.error_occurred.emit('hwt606_2', error_msg)
-            return False
-
-    def disconnect_hwt606_2(self):
-        """断开 HWT606-2 连接"""
-        if not self.hwt606_2:
-            return
-
-        self.connection_status['hwt606_2'] = False
-
-        try:
-            self.hwt606_2.close()
-        except Exception as e:
-            print(f"[WARN] HWT606-2 关闭失败: {e}")
-
-        self.hwt606_2 = None
-        self.connection_status_changed.emit('hwt606_2', False)
-        print("[INFO] HWT606-2 已断开")
-
-        self._maybe_stop_unified_thread()
 
     # -------- 粘附脚（回调采集） --------
 
@@ -762,8 +515,6 @@ class SensorManager(QObject):
 
     def disconnect_all(self):
         """断开所有传感器"""
-        self.disconnect_hwt606_1()
-        self.disconnect_hwt606_2()
         self.disconnect_nianfujiao()
         self.disconnect_liuzhouli()
 
@@ -776,18 +527,6 @@ class SensorManager(QObject):
 
     def _update_display(self):
         """更新显示（10Hz，在主线程中执行）"""
-        if self.latest_data['hwt606_1']:
-            import time
-            data = dict(self.latest_data['hwt606_1'])
-            if time.perf_counter_ns()-data['host_received_ns'] > 500_000_000:
-                data.update(velocity_valid=False, velocity_status='stale')
-            if self.hwt606_1 and not self.hwt606_1.device.isOpen:
-                data.update(velocity_valid=False, velocity_status='stale')
-            self.hwt606_1_data_updated.emit(data)
-
-        if self.latest_data['hwt606_2']:
-            self.hwt606_2_data_updated.emit(self.latest_data['hwt606_2'])
-
         for style, data in self.latest_data['nianfujiao'].items():
             if data:
                 self.nianfujiao_data_updated.emit(style, data)
@@ -865,265 +604,6 @@ class SensorManager(QObject):
             raise ValueError('正在等待下位机应用新的清零基准，请稍后重新布防')
         self.controller.start(pairs['baseline_generation'])
 
-    def _get_hwt606_data(self, sensor) -> dict:
-        """获取 HWT606 传感器数据（支持 JY901SDevice1 和 JY901SDevice2）"""
-        # 如果启用角度基准，优先使用校准角度
-        if getattr(sensor, "angle_baseline", None) is not None:
-            angle_x, angle_y, angle_z = sensor.get_calibrated_angles()
-        else:
-            angle_x = sensor.device.getDeviceData('angleX') or 0.0
-            angle_y = sensor.device.getDeviceData('angleY') or 0.0
-            angle_z = sensor.device.getDeviceData('angleZ') or 0.0
-
-        # 如角度全 0，尝试打一个快照用于调试
-        try:
-            if (angle_x == 0.0 and angle_y == 0.0 and angle_z == 0.0) \
-                    and self._debug_print_counts.get('hwt606_1', 0) < 5:
-                self._debug_print_counts['hwt606_1'] += 1
-                print(f"[DEBUG] HWT606 raw snapshot "
-                      f"({self._debug_print_counts['hwt606_1']}) -> ")
-                try:
-                    keys = [
-                        'accX', 'accY', 'accZ',
-                        'gyroX', 'gyroY', 'gyroZ',
-                        'angleX', 'angleY', 'angleZ',
-                        'temperature',
-                    ]
-                    snapshot = {k: sensor.device.getDeviceData(k) for k in keys}
-                    print(snapshot)
-                except Exception as e:
-                    print(f"[DEBUG] 无法读取 device 数据: {e}")
-        except Exception:
-            pass
-
-        return {
-            'acc_x': sensor.device.getDeviceData('accX') or 0.0,
-            'acc_y': sensor.device.getDeviceData('accY') or 0.0,
-            'acc_z': sensor.device.getDeviceData('accZ') or 0.0,
-            'gyro_x': sensor.device.getDeviceData('gyroX') or 0.0,
-            'gyro_y': sensor.device.getDeviceData('gyroY') or 0.0,
-            'gyro_z': sensor.device.getDeviceData('gyroZ') or 0.0,
-            'angle_x': angle_x,
-            'angle_y': angle_y,
-            'angle_z': angle_z,
-            'temperature': sensor.device.getDeviceData('temperature') or 0.0,
-        }
-
-    # def _update_hwt606_velocity(self, sensor_id: str, data: dict):
-    #     """
-    #     根据当前加速度和 timestamp_ms 对 HWT606 做简单速度积分：
-    #     v(t) = v(t-1) + a * dt
-
-    #     注意：
-    #     - 这是最简单的积分方式，会有明显漂移，仅用于大致速度估计
-    #     """
-    #     ts_ms = data.get('timestamp_ms')
-    #     if ts_ms is None:
-    #         # 没有统一时间戳就不积分
-    #         return
-
-    #     last_ts = self._hwt606_last_ts_ms.get(sensor_id)
-    #     if last_ts is None:
-    #         # 第一帧，只记录时间，不积分
-    #         self._hwt606_last_ts_ms[sensor_id] = ts_ms
-    #         data['vel_x'] = 0.0
-    #         data['vel_y'] = 0.0
-    #         data['vel_z'] = 0.0
-    #         return
-
-    #     dt = (ts_ms - last_ts) / 1000.0  # 秒
-    #     if dt <= 0:
-    #         # 时间非正，直接跳过
-    #         data['vel_x'] = self._hwt606_velocity[sensor_id]['vx']
-    #         data['vel_y'] = self._hwt606_velocity[sensor_id]['vy']
-    #         data['vel_z'] = self._hwt606_velocity[sensor_id]['vz']
-    #         return
-
-    #     self._hwt606_last_ts_ms[sensor_id] = ts_ms
-
-    #     # 读取加速度
-    #     ax = float(data.get('acc_x', 0.0))
-    #     ay = float(data.get('acc_y', 0.0))
-    #     az = float(data.get('acc_z', 0.0))
-    #     az -=1.0  # 去除重力影响
-    #     # 如果 acc 单位是 g，在这里乘 9.8
-    #     ax *= 9.8
-    #     ay *= 9.8
-    #     az *= 9.8
-
-    #     v_state = self._hwt606_velocity[sensor_id]
-    #     v_state['vx'] += ax * dt
-    #     v_state['vy'] += ay * dt
-    #     v_state['vz'] += az * dt
-
-    #     # 写回到当前 data，后面会被写入 CSV
-    #     data['vel_x'] = v_state['vx']
-    #     data['vel_y'] = v_state['vy']
-    #     data['vel_z'] = v_state['vz']
-
-    def _update_hwt606_velocity(self, sensor_id: str, data: dict):
-        """
-        实时速度积分（滑动偏置估计 + 梯形积分）
-
-        - 不需要等待标定阶段；
-        - 用低通的“慢平均”估计三轴偏置（含重力），只在加速度变化不大时更新；
-        - 每帧：净加速度 = 当前加速度 - 慢平均，加到速度里；
-        - 使用梯形积分：v_k = v_{k-1} + (a_{k-1}+a_k)/2 * dt。
-        """
-
-        ts_ms = data.get('timestamp_ms')
-        if ts_ms is None:
-            # 没有统一时间戳就不积分
-            return
-
-        # ---------- 取出该传感器当前状态 ----------
-        last_ts = self._hwt606_last_ts_ms.get(sensor_id)
-        v_state = self._hwt606_velocity.get(sensor_id)
-        bias = self._hwt606_bias_g.get(sensor_id)
-        last_acc = self._hwt606_last_acc.get(sensor_id)
-
-        if v_state is None or bias is None or last_acc is None:
-            # 意外情况：这个 id 没初始化，直接跳过
-            return
-
-        # 第一次有时间戳：只更新时间，不积分
-        if last_ts is None:
-            self._hwt606_last_ts_ms[sensor_id] = ts_ms
-            data['vel_x'] = v_state['vx']
-            data['vel_y'] = v_state['vy']
-            data['vel_z'] = v_state['vz']
-            return
-
-        dt = (ts_ms - last_ts) / 1000.0  # 秒
-        if dt <= 0:
-            # 时间非正，直接沿用上一次速度
-            data['vel_x'] = v_state['vx']
-            data['vel_y'] = v_state['vy']
-            data['vel_z'] = v_state['vz']
-            return
-
-        # 更新时间
-        self._hwt606_last_ts_ms[sensor_id] = ts_ms
-
-        # ---------- 当前原始加速度（单位：g） ----------
-        ax_g = float(data.get('acc_x', 0.0))
-        ay_g = float(data.get('acc_y', 0.0))
-        az_g = float(data.get('acc_z', 0.0))
-
-        # ---------- 滑动估计偏置（含重力） ----------
-        alpha = self._hwt606_bias_alpha
-
-        dev_x = ax_g - bias['ax']
-        dev_y = ay_g - bias['ay']
-        dev_z = az_g - bias['az']
-        dev_mag = (dev_x**2 + dev_y**2 + dev_z**2) ** 0.5
-
-        # 只有在“偏离不大”（近似静止/匀速）时，才更新偏置，避免剧烈运动污染
-        if dev_mag < self._hwt606_quiet_threshold_g:
-            bias['ax'] = (1.0 - alpha) * bias['ax'] + alpha * ax_g
-            bias['ay'] = (1.0 - alpha) * bias['ay'] + alpha * ay_g
-            bias['az'] = (1.0 - alpha) * bias['az'] + alpha * az_g
-            self._hwt606_bias_g[sensor_id] = bias
-
-        # ---------- 去偏置，得到净加速度（单位：g） ----------
-        ax_g_net = ax_g - bias['ax']
-        ay_g_net = ay_g - bias['ay']
-        az_g_net = az_g - bias['az']
-        # 注意：这里已经把重力的慢平均值也减掉了，不需要再 az -= 1.0
-
-        # ---------- 转为 m/s^2 ----------
-        g0 = 9.8
-        ax = ax_g_net * g0
-        ay = ay_g_net * g0
-        az = az_g_net * g0
-
-        # ---------- 梯形积分 ----------
-        # v_k = v_{k-1} + (a_{k-1} + a_k)/2 * dt
-        v_state['vx'] += 0.5 * (last_acc['ax'] + ax) * dt
-        v_state['vy'] += 0.5 * (last_acc['ay'] + ay) * dt
-        v_state['vz'] += 0.5 * (last_acc['az'] + az) * dt
-
-        # 更新状态存回去
-        self._hwt606_velocity[sensor_id] = v_state
-        self._hwt606_last_acc[sensor_id] = {'ax': ax, 'ay': ay, 'az': az}
-
-        # 把当前速度写回 data，用于 CSV / GUI
-        data['vel_x'] = v_state['vx']
-        data['vel_y'] = v_state['vy']
-        data['vel_z'] = v_state['vz']
-
-
-
-    # ==================== 传感器控制 ====================
-
-    def hwt606_1_accel_calibration(self) -> bool:
-        """HWT606-1 加速度校准"""
-        if self.hwt606_1 and self.connection_status['hwt606_1']:
-            try:
-                from drivers.HWT606_song_1.chs.utils import acceleration_calibration
-                acceleration_calibration(self.hwt606_1.device)
-                print("[INFO] HWT606-1 加速度校准完成")
-                return True
-            except Exception as e:
-                error_msg = f"加速度校准失败: {str(e)}"
-                print(f"[ERROR] HWT606-1 {error_msg}")
-                self.error_occurred.emit('hwt606_1', error_msg)
-                return False
-        return False
-
-    def hwt606_1_angle_zero(self) -> bool:
-        """HWT606-1 角度清零"""
-        if self.hwt606_1 and self.connection_status['hwt606_1']:
-            success = self.hwt606_1.angle_zero()
-            if success:
-                print("[INFO] HWT606-1 角度清零完成")
-            else:
-                self.error_occurred.emit('hwt606_1', "角度清零失败")
-            return success
-        return False
-
-    def hwt606_1_reset_baseline(self) -> bool:
-        """HWT606-1 重置角度基准"""
-        if self.hwt606_1 and self.connection_status['hwt606_1']:
-            self.hwt606_1.reset_angle_baseline()
-            print("[INFO] HWT606-1 角度基准已重置")
-            return True
-        return False
-
-    def hwt606_2_accel_calibration(self) -> bool:
-        """HWT606-2 加速度校准"""
-        if self.hwt606_2 and self.connection_status['hwt606_2']:
-            try:
-                from drivers.HWT606_song_2.chs.utils import acceleration_calibration
-                acceleration_calibration(self.hwt606_2.device)
-                print("[INFO] HWT606-2 加速度校准完成")
-                return True
-            except Exception as e:
-                error_msg = f"加速度校准失败: {str(e)}"
-                print(f"[ERROR] HWT606-2 {error_msg}")
-                self.error_occurred.emit('hwt606_2', error_msg)
-                return False
-        return False
-
-    def hwt606_2_angle_zero(self) -> bool:
-        """HWT606-2 角度清零"""
-        if self.hwt606_2 and self.connection_status['hwt606_2']:
-            success = self.hwt606_2.angle_zero()
-            if success:
-                print("[INFO] HWT606-2 角度清零完成")
-            else:
-                self.error_occurred.emit('hwt606_2', "角度清零失败")
-            return success
-        return False
-
-    def hwt606_2_reset_baseline(self) -> bool:
-        """HWT606-2 重置角度基准"""
-        if self.hwt606_2 and self.connection_status['hwt606_2']:
-            self.hwt606_2.reset_angle_baseline()
-            print("[INFO] HWT606-2 角度基准已重置")
-            return True
-        return False
-
     def nianfujiao_reply(self) -> bool:
         """粘附脚回复指令（恢复默认状态）"""
         self.controller.stop('手动回复，控制器已停止')
@@ -1192,15 +672,3 @@ class SensorManager(QObject):
     def get_all_status(self) -> Dict[str, bool]:
         """获取所有传感器连接状态"""
         return self.connection_status.copy()
-
-    def get_hwt606_1_baseline(self) -> Optional[dict]:
-        """获取 HWT606-1 角度基准"""
-        if self.hwt606_1:
-            return self.hwt606_1.angle_baseline
-        return None
-
-    def get_hwt606_2_baseline(self) -> Optional[dict]:
-        """获取 HWT606-2 角度基准"""
-        if self.hwt606_2:
-            return self.hwt606_2.angle_baseline
-        return None

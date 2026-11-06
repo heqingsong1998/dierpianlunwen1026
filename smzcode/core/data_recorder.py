@@ -1,5 +1,5 @@
 """
-数据记录器 - IMU1、黏附脚、六轴力与控制事件的异步 CSV 写入
+数据记录器 - 黏附脚、六轴力与控制事件的异步 CSV 写入
 """
 import os
 import csv
@@ -46,15 +46,6 @@ PROTOCOL_COLUMNS = {
                  'gpio_changed', 'zero_pending', 'timing_valid', 'timing_error'],
 }
 
-IMU1_COLUMNS = [
-    'timestamp_ms', 'host_received_ns', 'sample_sequence', 'chip_time_ms', 'frame_complete',
-    'acc_x','acc_y','acc_z','gyro_x','gyro_y','gyro_z','angle_x','angle_y','angle_z','temperature',
-    'linear_acc_x','linear_acc_y','linear_acc_z','vel_y_mm_s',
-    'velocity_valid','velocity_status','velocity_generation','velocity_run_id','calibration_progress',
-    'integration_dt_s','integration_time_source','integration_elapsed_s',
-    'bias_x','bias_y','bias_z','reference_yaw_deg','gravity_mps2','velocity_model_id',
-]
-
 
 class DataRecorder:
     """统一的数据记录器"""
@@ -75,7 +66,6 @@ class DataRecorder:
 
         # 数据队列（异步写入）
         self.data_queues = {
-            'hwt606_1': queue.Queue(maxsize=5000),
             'nianfujiao_style0': queue.Queue(maxsize=5000),
             'liuzhouli': queue.Queue(maxsize=10000),
             'nianfujiao_frames': queue.Queue(maxsize=5000),
@@ -98,7 +88,6 @@ class DataRecorder:
         }
 
         self.data_counts = {
-            'hwt606_1': 0,
             'nianfujiao': 0,
             'liuzhouli': 0,
         }
@@ -136,7 +125,6 @@ class DataRecorder:
         try:
             self._create_nianfujiao_csv()
             self._create_liuzhouli_csv()
-            self._create_hwt606_csv('hwt606_1')
             self._create_nianfujiao_csv('nianfujiao_frames')
             for kind in PROTOCOL_COLUMNS:
                 self._create_protocol_csv(kind)
@@ -269,55 +257,6 @@ class DataRecorder:
             file.flush()
 
     # ==================== 写入接口（给 SensorManager 调） ====================
-
-    def write_hwt606_data(self, sensor_id: str, data: Dict[str, Any]):
-        """
-        写入 HWT606 传感器数据（放入队列）
-
-        IMU1 每个真实输出周期一行；无效速度留空，保留状态与原始量。
-        """
-        if sensor_id == 'hwt606_1':
-            with self.lock:
-                if not self.is_recording:
-                    return
-                row = [self._timestamp_ms_to_str(data.get('timestamp_ms'))]
-                row.extend(data.get(key, '') for key in IMU1_COLUMNS)
-                try:
-                    self.data_queues[sensor_id].put_nowait(row)
-                    self.data_counts[sensor_id] += 1
-                except queue.Full:
-                    print('[WARN] IMU1 记录队列已满，丢弃数据')
-            return
-        if not self.is_recording:
-            return
-
-        try:
-            ts_ms = data.get('timestamp_ms', '')
-            timestamp_str = self._timestamp_ms_to_str(ts_ms)
-
-            row = [
-                timestamp_str,     # 人类可读时间
-                ts_ms,             # 统一帧时间戳（ms）
-                data.get('acc_x', 0.0),
-                data.get('acc_y', 0.0),
-                data.get('acc_z', 0.0),
-                data.get('gyro_x', 0.0),
-                data.get('gyro_y', 0.0),
-                data.get('gyro_z', 0.0),
-                data.get('angle_x', 0.0),
-                data.get('angle_y', 0.0),
-                data.get('angle_z', 0.0),
-                data.get('temperature', 0.0),
-                data.get('vel_x', 0.0),   # ★ 新增：速度
-                data.get('vel_y', 0.0),
-                data.get('vel_z', 0.0),
-            ]
-            self.data_queues[sensor_id].put_nowait(row)
-            self.data_counts[sensor_id] += 1
-        except queue.Full:
-            print(f"[WARN] {sensor_id} 数据队列已满，丢弃数据")
-        except Exception as e:
-            print(f"[ERROR] 写入{sensor_id}数据失败: {e}")
 
     def write_nianfujiao_data(self, style: int, data: Dict[str, Any],
                               queue_key: str = 'nianfujiao_style0'):
@@ -455,32 +394,6 @@ class DataRecorder:
             print(f"[ERROR] 写入六轴力数据失败: {e}")
 
     # ==================== CSV 创建 ====================
-
-    def _create_hwt606_csv(self, sensor_id: str):
-        """创建 HWT606 传感器 CSV 文件"""
-        filepath = os.path.join(self.session_dir, f"{sensor_id}.csv")
-        file = open(filepath, 'w', newline='', encoding='utf-8')
-        writer = csv.writer(file)
-
-        # 表头：增加 timestamp_ms 列（统一时间轴）
-        writer.writerow(['timestamp', *IMU1_COLUMNS] if sensor_id == 'hwt606_1' else [
-            'timestamp',        # 人类可读
-            'timestamp_ms',     # 统一帧时间戳（ms）
-            'acc_x', 'acc_y', 'acc_z',
-            'gyro_x', 'gyro_y', 'gyro_z',
-            'angle_x', 'angle_y', 'angle_z',
-            'temperature',
-            'vel_x', 'vel_y', 'vel_z',   # ★ 新增：速度
-        ])
-
-        self.csv_files[sensor_id] = file
-        self.csv_writers[sensor_id] = writer
-
-    def write_imu1_snapshot(self, snapshot):
-        if self.is_recording and self.session_dir:
-            with open(os.path.join(self.session_dir, 'imu1_velocity_config.json'),
-                      'w', encoding='utf8') as handle:
-                json.dump(snapshot, handle, ensure_ascii=False, indent=2, allow_nan=False)
 
     def _create_nianfujiao_csv(self, queue_key='nianfujiao_style0'):
         """创建两个同结构的足端 CSV，统一为 34 列。"""

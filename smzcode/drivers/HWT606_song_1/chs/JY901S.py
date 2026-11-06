@@ -4,7 +4,6 @@
     Test file
 """
 import time
-import datetime
 import platform
 import struct
 from .lib import device_model as deviceModel
@@ -14,9 +13,6 @@ from .lib.protocol_resolver.roles.wit_protocol_resolver import WitProtocolResolv
 welcome = """
 欢迎使用维特智能示例程序    Welcome to the Wit-Motoin sample program
 """
-_writeF = None                    #写文件  Write file
-_IsWriteF = False                 #写文件标识    Write file identification
-
 def readConfig(device):
     """
     读取配置信息示例    Example of reading configuration information
@@ -87,53 +83,6 @@ def onUpdate(deviceModel):
         , " 航向角:" + str(deviceModel.getDeviceData("Yaw")) + " 地速:" + str(deviceModel.getDeviceData("Speed"))
          , " 四元素:" + str(deviceModel.getDeviceData("q1")) + "," + str(deviceModel.getDeviceData("q2")) + "," + str(deviceModel.getDeviceData("q3"))+ "," + str(deviceModel.getDeviceData("q4"))
           )
-    if (_IsWriteF):    #记录数据    Record data
-        Tempstr = " " + str(deviceModel.getDeviceData("Chiptime"))
-        Tempstr += "\t"+str(deviceModel.getDeviceData("accX")) + "\t"+str(deviceModel.getDeviceData("accY"))+"\t"+ str(deviceModel.getDeviceData("accZ"))
-        Tempstr += "\t" + str(deviceModel.getDeviceData("gyroX")) +"\t"+ str(deviceModel.getDeviceData("gyroY")) +"\t"+ str(deviceModel.getDeviceData("gyroZ"))
-        Tempstr += "\t" + str(deviceModel.getDeviceData("angleX")) +"\t" + str(deviceModel.getDeviceData("angleY")) +"\t"+ str(deviceModel.getDeviceData("angleZ"))
-        Tempstr += "\t" + str(deviceModel.getDeviceData("temperature"))
-        Tempstr += "\t" + str(deviceModel.getDeviceData("magX")) +"\t" + str(deviceModel.getDeviceData("magY")) +"\t"+ str(deviceModel.getDeviceData("magZ"))
-        Tempstr += "\t" + str(deviceModel.getDeviceData("lon")) + "\t" + str(deviceModel.getDeviceData("lat"))
-        Tempstr += "\t" + str(deviceModel.getDeviceData("Yaw")) + "\t" + str(deviceModel.getDeviceData("Speed"))
-        Tempstr += "\t" + str(deviceModel.getDeviceData("q1")) + "\t" + str(deviceModel.getDeviceData("q2"))
-        Tempstr += "\t" + str(deviceModel.getDeviceData("q3")) + "\t" + str(deviceModel.getDeviceData("q4"))
-        Tempstr += "\r\n"
-        _writeF.write(Tempstr)
-
-def startRecord():
-    """
-    开始记录数据  Start recording data
-    :return:
-    """
-    global _writeF
-    global _IsWriteF
-    _writeF = open(str(datetime.datetime.now().strftime('%Y%m%d%H%M%S')) + ".txt", "w")    #新建一个文件
-    _IsWriteF = True                                                                        #标记写入标识
-    Tempstr = "Chiptime"
-    Tempstr +=  "\tax(g)\tay(g)\taz(g)"
-    Tempstr += "\twx(deg/s)\twy(deg/s)\twz(deg/s)"
-    Tempstr += "\tAngleX(deg)\tAngleY(deg)\tAngleZ(deg)"
-    Tempstr += "\tT(°)"
-    Tempstr += "\tmagx\tmagy\tmagz"
-    Tempstr += "\tlon\tlat"
-    Tempstr += "\tYaw\tSpeed"
-    Tempstr += "\tq1\tq2\tq3\tq4"
-    Tempstr += "\r\n"
-    _writeF.write(Tempstr)
-    print("开始记录数据")
-
-def endRecord():
-    """
-    结束记录数据  End record data
-    :return:
-    """
-    global _writeF
-    global _IsWriteF
-    _IsWriteF = False             # 标记不可写入标识    Tag cannot write the identity
-    _writeF.close()               #关闭文件 Close file
-    print("结束记录数据")
-
 if __name__ == '__main__':
 
     print(welcome)
@@ -156,7 +105,5 @@ if __name__ == '__main__':
     readConfig(device)                                  #读取配置信息 Read configuration information
     device.dataProcessor.onVarChanged.append(onUpdate)  #数据更新事件 Data update event
 
-    startRecord()                                       # 开始记录数据    Start recording data
     input()
     device.closeDevice()
-    endRecord()                                         #结束记录数据 End record data

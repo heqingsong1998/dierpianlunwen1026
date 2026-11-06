@@ -212,10 +212,10 @@ class RecordingPanel(QWidget):
         更新数据条数
         
         Args:
-            counts: 数据条数字典 {'hwt606_1': 100, 'hwt606_2': 98, ...}
+            counts: 数据条数字典 {'nianfujiao': 100, 'liuzhouli': 100}
         """
         text = (f"粘附脚: {counts.get('nianfujiao', 0)} | "
-                f"六轴力: {counts.get('liuzhouli', 0)} | IMU1: {counts.get('hwt606_1', 0)}")
+                f"六轴力: {counts.get('liuzhouli', 0)}")
         self.count_label.setText(text)
     
     def update_storage_path(self, path: str):
