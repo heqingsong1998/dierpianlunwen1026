@@ -22,6 +22,7 @@ from gui.panels.recording_panel import RecordingPanel
 
 from core.sensor_manager import SensorManager
 from core.data_recorder import DataRecorder
+from core.ultrasonic_serial import UltrasonicSerial
 from gui.widgets.log_widget import LogWidget
 from controller.algorithms.threshold import ThresholdSettings
 from dataclasses import asdict
@@ -45,6 +46,7 @@ class MainWindow(QMainWindow):
         # 创建核心组件
         self.sensor_manager = SensorManager(config_path)
         self.data_recorder = DataRecorder()
+        self.ultrasonic_serial = UltrasonicSerial(self)
         
         # 定时器（更新文件大小等统计信息）
         self.stats_timer = QTimer()
@@ -148,6 +150,11 @@ class MainWindow(QMainWindow):
         self.connection_panel.disconnect_sensor.connect(self._on_disconnect_sensor)
         self.connection_panel.connect_all.connect(self._on_connect_all)
         self.connection_panel.disconnect_all.connect(self._on_disconnect_all)
+        self.connection_panel.ultrasonic_widget.toggle_requested.connect(self._on_toggle_ultrasonic)
+        self.ultrasonic_serial.connection_changed.connect(self._on_ultrasonic_connection_changed)
+        self.ultrasonic_serial.sample_received.connect(self._on_ultrasonic_sample)
+        self.ultrasonic_serial.data_timeout.connect(self._on_ultrasonic_data_timeout)
+        self.ultrasonic_serial.error_occurred.connect(self._on_ultrasonic_error)
 
         # ========== 数据记录回调（高频直接调用，不通过信号） ==========
         self.sensor_manager.record_callback_nianfujiao = self.data_recorder.write_nianfujiao_data
@@ -303,6 +310,14 @@ class MainWindow(QMainWindow):
             'nianfujiao': self.sensor_manager.connect_nianfujiao(),
             'liuzhouli': self.sensor_manager.connect_liuzhouli(),
         }
+        ultrasonic_error = ""
+        if self.connection_panel.ultrasonic_widget.port_name:
+            try:
+                self._open_ultrasonic()
+                results['超声波'] = True
+            except OSError as exc:
+                results['超声波'] = False
+                ultrasonic_error = f"\n超声波串口: {exc}"
         
         self.connection_panel.set_all_busy(False)
         
@@ -313,7 +328,7 @@ class MainWindow(QMainWindow):
             failed = [k for k, v in results.items() if not v]
             QMessageBox.warning(
                 self, "部分失败", 
-                f"成功: {success_count}/{len(results)}\n失败: {', '.join(failed)}"
+                f"成功: {success_count}/{len(results)}\n失败: {', '.join(failed)}{ultrasonic_error}"
             )
 
     def _on_disconnect_all(self):
@@ -322,6 +337,7 @@ class MainWindow(QMainWindow):
         if self.data_recorder.is_recording:
             self._on_stop_recording()
 
+        self.ultrasonic_serial.close()
         self.connection_panel.set_all_busy(True)
 
         def _worker():
@@ -356,6 +372,36 @@ class MainWindow(QMainWindow):
         """传感器错误"""
         self.connection_panel.set_sensor_error(sensor_id)
         QMessageBox.critical(self, f"{sensor_id} 错误", error_msg)
+
+    def _open_ultrasonic(self):
+        widget = self.connection_panel.ultrasonic_widget
+        if not widget.port_name:
+            raise OSError("请选择或输入串口号")
+        self.ultrasonic_serial.open(widget.port_name, widget.baud_box.value())
+
+    def _on_toggle_ultrasonic(self):
+        if self.ultrasonic_serial.is_open:
+            self.ultrasonic_serial.close()
+            return
+        try:
+            self._open_ultrasonic()
+        except OSError as exc:
+            QMessageBox.warning(self, "超声波串口打开失败", str(exc))
+
+    def _on_ultrasonic_connection_changed(self, connected):
+        self.connection_panel.ultrasonic_widget.set_connected(connected)
+        self.data_display_panel.update_ultrasonic_data(status="等待数据" if connected else "未连接")
+
+    def _on_ultrasonic_sample(self, data):
+        self.data_recorder.write_ultrasonic_data(data)
+        self.data_display_panel.update_ultrasonic_data(data)
+
+    def _on_ultrasonic_data_timeout(self):
+        self.data_display_panel.update_ultrasonic_data(status="未收到串口数据")
+
+    def _on_ultrasonic_error(self, message):
+        self.data_display_panel.update_ultrasonic_data(status="串口读取失败")
+        self.statusBar().showMessage(f"超声波串口: {message}")
 
     def _on_liuzhouli_zero_requested(self):
         """异步执行六轴力清零，避免阻塞 GUI 主线程。"""
@@ -441,7 +487,7 @@ class MainWindow(QMainWindow):
             self.recording_panel.start_btn.setEnabled(False)
             return
         # 检查是否有传感器连接
-        if not any(self.sensor_manager.get_all_status().values()):
+        if not self.ultrasonic_serial.is_open and not any(self.sensor_manager.get_all_status().values()):
             QMessageBox.warning(self, "警告", "请先连接至少一个传感器！")
             self.recording_panel.reset()
             return
@@ -449,6 +495,7 @@ class MainWindow(QMainWindow):
         # 启动数据记录
         if self.data_recorder.start_recording():
             self.data_recorder.write_controller_snapshot(self.sensor_manager.controller.snapshot())
+            self.recording_panel.update_data_counts(self.data_recorder.data_counts)
             self._update_liuzhouli_zero_button()
             # 更新存储路径
             session_path = self.data_recorder.get_session_path()
@@ -470,7 +517,7 @@ class MainWindow(QMainWindow):
             self.stats_timer.stop()
             
             # 最后更新一次统计信息
-            self._update_statistics()
+            self.recording_panel.update_data_counts(self.data_recorder.data_counts)
             
             QMessageBox.information(
                 self, "成功", 
@@ -544,6 +591,7 @@ class MainWindow(QMainWindow):
         if self._offline_workbench is not None:
             self._offline_workbench.close()
         # 断开所有传感器
+        self.ultrasonic_serial.close()
         self.sensor_manager.disconnect_all()
         
         event.accept()

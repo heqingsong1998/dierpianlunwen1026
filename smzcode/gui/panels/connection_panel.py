@@ -1,9 +1,10 @@
 """
-连接管理面板 - 管理黏附脚和六轴力传感器的连接
+连接管理面板 - 管理黏附脚、六轴力及超声波传感器的连接
 """
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                             QPushButton, QLabel, QGridLayout)
+                             QPushButton, QLabel, QGridLayout, QComboBox, QSpinBox)
 from PyQt5.QtCore import pyqtSignal, Qt
+from PyQt5.QtSerialPort import QSerialPortInfo
 
 import sys
 import os
@@ -127,6 +128,53 @@ class SensorConnectionWidget(QWidget):
         self.connect_btn.setEnabled(True)
 
 
+class UltrasonicConnectionWidget(QGroupBox):
+    toggle_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__("超声波串口（DM-MC02）", parent)
+        layout = QGridLayout(self)
+
+        self.port_box = QComboBox()
+        self.port_box.setEditable(True)
+        self.port_box.setInsertPolicy(QComboBox.NoInsert)
+        self.port_box.lineEdit().setPlaceholderText("选择或输入 COM 口")
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.clicked.connect(self.refresh_ports)
+        layout.addWidget(QLabel("串口"), 0, 0)
+        layout.addWidget(self.port_box, 0, 1)
+        layout.addWidget(self.refresh_btn, 0, 2)
+
+        self.baud_box = QSpinBox()
+        self.baud_box.setRange(1, 4_000_000)
+        self.baud_box.setValue(921600)
+        layout.addWidget(QLabel("波特率"), 1, 0)
+        layout.addWidget(self.baud_box, 1, 1)
+        layout.addWidget(QLabel("8N1"), 1, 2)
+
+        self.toggle_btn = QPushButton("打开超声波串口")
+        self.toggle_btn.clicked.connect(self.toggle_requested.emit)
+        layout.addWidget(self.toggle_btn, 2, 0, 1, 3)
+        self.refresh_ports()
+
+    @property
+    def port_name(self):
+        return self.port_box.currentText().strip()
+
+    def refresh_ports(self):
+        selected_port = self.port_name
+        ports = sorted(port.portName() for port in QSerialPortInfo.availablePorts())
+        self.port_box.clear()
+        self.port_box.addItems(ports)
+        self.port_box.setCurrentIndex(-1)
+        self.port_box.setEditText(selected_port)
+
+    def set_connected(self, connected: bool):
+        self.toggle_btn.setText("关闭超声波串口" if connected else "打开超声波串口")
+        for widget in (self.port_box, self.baud_box, self.refresh_btn):
+            widget.setEnabled(not connected)
+
+
 class ConnectionPanel(QWidget):
     """连接管理面板"""
     
@@ -203,6 +251,9 @@ class ConnectionPanel(QWidget):
         sensors_layout.addWidget(liuzhouli_widget, 0, 1)
 
         layout.addLayout(sensors_layout)
+
+        self.ultrasonic_widget = UltrasonicConnectionWidget()
+        layout.addWidget(self.ultrasonic_widget)
         
         # 批量操作按钮
         batch_layout = QHBoxLayout()
@@ -247,6 +298,7 @@ class ConnectionPanel(QWidget):
         Args:
             busy: 是否忙碌
         """
+        self.ultrasonic_widget.setEnabled(not busy)
         for widget in self.sensor_widgets.values():
             if busy:
                 widget.set_busy()

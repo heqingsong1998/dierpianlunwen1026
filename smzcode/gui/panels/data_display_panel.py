@@ -1,7 +1,7 @@
 """
-数据显示面板 - 显示黏附脚和六轴力传感器的实时数据
+数据显示面板 - 显示黏附脚、六轴力及超声波传感器的实时数据
 """
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout,
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QLabel, QGridLayout, QTableWidget,
                              QTableWidgetItem, QHeaderView)
 from PyQt5.QtCore import Qt
@@ -228,7 +228,16 @@ class DataDisplayPanel(QWidget):
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
 
-        
+        ultrasonic = QGroupBox("超声波测距 / 测速")
+        ultrasonic_layout = QHBoxLayout(ultrasonic)
+        self.ultrasonic_distance = QLabel()
+        self.ultrasonic_speed = QLabel()
+        self.ultrasonic_status = QLabel()
+        for label in (self.ultrasonic_distance, self.ultrasonic_speed, self.ultrasonic_status):
+            ultrasonic_layout.addWidget(label)
+        self.update_ultrasonic_data(status="未连接")
+        layout.addWidget(ultrasonic)
+
         # 六轴力传感器
         self.liuzhouli_widget = LiuZhouLiDisplayWidget()
         layout.addWidget(self.liuzhouli_widget)
@@ -249,3 +258,21 @@ class DataDisplayPanel(QWidget):
 
     def update_nianfujiao_protocol(self, data: dict):
         self.nianfujiao_widget.update_protocol(data)
+
+    def update_ultrasonic_data(self, data=None, *, status=""):
+        distance = speed = None
+        if data is not None:
+            distance = data["distance_mm"]
+            speed = data["speed_mm_s"]
+            status = {
+                "OK": "测量正常",
+                "WARMUP": "等待速度估算",
+                "TIMEOUT": "回波超时",
+                "OUT_OF_RANGE": "超出测量范围",
+                "INVALID_ECHO": "无效回波",
+            }.get(data["status"], data["status"])
+        distance_text = "--" if distance is None else f"{distance} mm"
+        speed_text = "--" if speed is None else f"{speed:+d} mm/s"
+        self.ultrasonic_distance.setText(f"距离 {distance_text}")
+        self.ultrasonic_speed.setText(f"速度 {speed_text}")
+        self.ultrasonic_status.setText(status)

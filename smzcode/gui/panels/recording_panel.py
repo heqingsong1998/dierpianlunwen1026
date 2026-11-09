@@ -123,7 +123,8 @@ class RecordingPanel(QWidget):
         # 数据条数
         count_row = QHBoxLayout()
         count_row.addWidget(QLabel("数据条数:"))
-        self.count_label = QLabel("粘附脚: 0 | 六轴力: 0")
+        self.count_label = QLabel()
+        self.update_data_counts({})
         self.count_label.setFont(font)
         count_row.addWidget(self.count_label)
         count_row.addStretch()
@@ -215,7 +216,8 @@ class RecordingPanel(QWidget):
             counts: 数据条数字典 {'nianfujiao': 100, 'liuzhouli': 100}
         """
         text = (f"粘附脚: {counts.get('nianfujiao', 0)} | "
-                f"六轴力: {counts.get('liuzhouli', 0)}")
+                f"六轴力: {counts.get('liuzhouli', 0)} | "
+                f"超声波: {counts.get('ultrasonic', 0)}")
         self.count_label.setText(text)
     
     def update_storage_path(self, path: str):
@@ -246,7 +248,7 @@ class RecordingPanel(QWidget):
         self.status_label.setText("⏸️ 已停止")
         self.status_label.setStyleSheet("color: #666;")
         self.duration_label.setText("00:00:00")
-        self.count_label.setText("粘附脚: 0 | 六轴力: 0")
+        self.update_data_counts({})
         self.path_label.setText("未开始采集")
         self.size_label.setText("0 MB")
         

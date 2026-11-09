@@ -1,5 +1,5 @@
 """
-数据记录器 - 黏附脚、六轴力与控制事件的异步 CSV 写入
+数据记录器 - 黏附脚、六轴力、超声波与控制事件的异步 CSV 写入
 """
 import os
 import csv
@@ -28,6 +28,9 @@ FOOT_CSV_COLUMNS = ['timestamp', 'timestamp_ms', *FOOT_RAW_COLUMNS,
                     *FOOT_CAL_COLUMNS, *FOOT_METADATA_COLUMNS,
                     'Fz_total_cal', 'Fz_total_ref_cal', 'normal_force_model_id']
 FOOT_BASELINE_INDEX = FOOT_CSV_COLUMNS.index('baseline_generation')
+ULTRASONIC_CSV_COLUMNS = [
+    'timestamp', 'timestamp_ms', 'host_received_ns', 'distance_mm', 'speed_mm_s', 'status',
+]
 PROTOCOL_COLUMNS = {
     'board': ['sensor_ts_ms', 'host_received_ns', *BOARD_FIELDS, 'trigger_latency_us'],
     'controller': ['sensor_ts_ms', 'event', 'event_ns', 'sample_sequence', 'ready_us',
@@ -71,6 +74,7 @@ class DataRecorder:
         self.data_queues = {
             'nianfujiao_style0': queue.Queue(maxsize=5000),
             'liuzhouli': queue.Queue(maxsize=10000),
+            'ultrasonic': queue.Queue(maxsize=2000),
             'nianfujiao_frames': queue.Queue(maxsize=5000),
             **{f'nianfujiao_{kind}': queue.Queue(maxsize=2000) for kind in PROTOCOL_COLUMNS},
         }
@@ -93,6 +97,7 @@ class DataRecorder:
         self.data_counts = {
             'nianfujiao': 0,
             'liuzhouli': 0,
+            'ultrasonic': 0,
         }
 
         self.start_time: Optional[float] = None
@@ -214,8 +219,7 @@ class DataRecorder:
                     while not q.empty() and batch_count < self.write_batch_size:
                         try:
                             row = q.get_nowait()
-                            if sensor_id in self.csv_writers:
-                                self.csv_writers[sensor_id].writerow(row)
+                            if self._write_row(sensor_id, row):
                                 batch_count += 1
                                 wrote_any = True
                         except queue.Empty:
@@ -248,8 +252,7 @@ class DataRecorder:
             while not q.empty():
                 try:
                     row = q.get_nowait()
-                    if sensor_id in self.csv_writers:
-                        self.csv_writers[sensor_id].writerow(row)
+                    if self._write_row(sensor_id, row):
                         count += 1
                 except queue.Empty:
                     break
@@ -258,6 +261,20 @@ class DataRecorder:
 
         for file in self.csv_files.values():
             file.flush()
+
+    def _write_row(self, sensor_id, row):
+        if sensor_id == 'ultrasonic' and sensor_id not in self.csv_writers:
+            path = os.path.join(self.session_dir, 'ultrasonic.csv')
+            file = open(path, 'w', newline='', encoding='utf-8')
+            self.csv_files[sensor_id] = file
+            writer = csv.writer(file)
+            writer.writerow(ULTRASONIC_CSV_COLUMNS)
+            self.csv_writers[sensor_id] = writer
+        writer = self.csv_writers.get(sensor_id)
+        if writer is None:
+            return False
+        writer.writerow(row)
+        return True
 
     # ==================== 写入接口（给 SensorManager 调） ====================
 
@@ -395,6 +412,20 @@ class DataRecorder:
             print(f"[WARN] liuzhouli 数据队列已满，丢弃数据")
         except Exception as e:
             print(f"[ERROR] 写入六轴力数据失败: {e}")
+
+    def write_ultrasonic_data(self, data: Dict[str, Any]):
+        with self.lock:
+            if not self.is_recording:
+                return
+            row = [
+                self._timestamp_ms_to_str(data['timestamp_ms']),
+                *(data[key] for key in ULTRASONIC_CSV_COLUMNS[1:]),
+            ]
+            try:
+                self.data_queues['ultrasonic'].put_nowait(row)
+                self.data_counts['ultrasonic'] += 1
+            except queue.Full:
+                print("[WARN] 超声波数据队列已满，丢弃数据")
 
     # ==================== CSV 创建 ====================
 

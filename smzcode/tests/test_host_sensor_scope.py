@@ -1,11 +1,11 @@
-"""主界面两类传感器的连接与采集流程；不连接硬件。"""
+"""主界面传感器连接与采集流程；不连接硬件。"""
 import csv
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +36,7 @@ class HostSensorScopeTests(unittest.TestCase):
         window.deleteLater()
         self.app.processEvents()
 
-    def test_visible_controls_and_connect_all_only_include_foot_and_six_axis(self):
+    def test_connect_all_without_selected_ultrasonic_port(self):
         window = self.window
         manager = window.sensor_manager
         self.assertEqual(set(window.connection_panel.sensor_widgets), {'nianfujiao', 'liuzhouli'})
@@ -77,7 +77,85 @@ class HostSensorScopeTests(unittest.TestCase):
                 with (session / filename).open(encoding='utf-8', newline='') as handle:
                     self.assertEqual(len(list(csv.DictReader(handle))), 1)
             window.recording_panel.update_data_counts(window.data_recorder.data_counts)
-            self.assertEqual(window.recording_panel.count_label.text(), '粘附脚: 1 | 六轴力: 1')
+            self.assertEqual(window.recording_panel.count_label.text(), '粘附脚: 1 | 六轴力: 1 | 超声波: 0')
+
+    def test_ultrasonic_serial_controls_display_and_recording(self):
+        window = self.window
+        reader = window.ultrasonic_serial
+        connection = window.connection_panel.ultrasonic_widget
+        display = window.data_display_panel
+        port = Mock()
+        port.isOpen.return_value = False
+
+        def open_port(_mode):
+            port.isOpen.return_value = True
+            return True
+
+        def close_port():
+            port.isOpen.return_value = False
+
+        port.open.side_effect = open_port
+        port.close.side_effect = close_port
+        port.readAll.side_effect = [
+            b'distance_mm=123,speed_mm_s=NA\r\n',
+            b'distance_mm=120,speed_',
+            b'mm_s=-50\r\ndistance_mm=NA,speed_mm_s=NA,status=TIMEOUT\r\n',
+            b'x' * 129,
+            b'serial garbage\r\ndistance_mm=125,speed_mm_s=+50\r\n',
+            b'distance_mm=126,speed_mm_s=50\r\n',
+        ]
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(reader, '_port', port), \
+                patch.object(QMessageBox, 'information'):
+            window.data_recorder.base_dir = temp
+            self.assertEqual(connection.baud_box.value(), 921600)
+            connection.port_box.setEditText('COM88')
+            connection.baud_box.setValue(460800)
+            connection.toggle_btn.click()
+            port.setPortName.assert_called_once_with('COM88')
+            port.setBaudRate.assert_called_once_with(460800)
+            self.assertFalse(connection.baud_box.isEnabled())
+
+            reader._read_available()
+            self.assertEqual(display.ultrasonic_distance.text(), '距离 123 mm')
+            self.assertEqual(display.ultrasonic_status.text(), '等待速度估算')
+
+            window.recording_panel.start_btn.click()
+            self.assertTrue(window.data_recorder.is_recording)
+            window.sensor_manager.record_callback_nianfujiao(0, {
+                'raw': [0] * 24, 'calibrated': [0.] * 24,
+                'timestamp_ms': 1700000000000,
+            })
+            window.sensor_manager.record_callback_liuzhouli({'Fz': -1.25, 'timestamp_ms': 1700000000000})
+            reader._read_available()
+            self.assertEqual(window.data_recorder.data_counts['ultrasonic'], 0)
+            reader._read_available()
+            self.assertEqual(display.ultrasonic_speed.text(), '速度 --')
+            self.assertEqual(display.ultrasonic_status.text(), '回波超时')
+            reader._read_available()
+            reader._read_available()
+            self.assertEqual(display.ultrasonic_speed.text(), '速度 +50 mm/s')
+            reader.data_timeout.emit()
+            self.assertEqual(display.ultrasonic_distance.text(), '距离 --')
+            self.assertEqual(display.ultrasonic_status.text(), '未收到串口数据')
+
+            window.recording_panel.stop_btn.click()
+            reader._read_available()
+            self.assertEqual(window.recording_panel.count_label.text(), '粘附脚: 1 | 六轴力: 1 | 超声波: 3')
+            session = Path(window.data_recorder.session_dir)
+            with (session / 'ultrasonic.csv').open(encoding='utf-8', newline='') as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(
+                [(row['distance_mm'], row['speed_mm_s'], row['status']) for row in rows],
+                [('120', '-50', 'OK'), ('', '', 'TIMEOUT'), ('125', '50', 'OK')],
+            )
+            self.assertTrue(all(int(row['timestamp_ms']) > 0 and
+                                int(row['host_received_ns']) > 0 for row in rows))
+
+            connection.toggle_btn.click()
+            port.close.assert_called_once()
+            self.assertTrue(connection.baud_box.isEnabled())
+            self.assertEqual(display.ultrasonic_status.text(), '未连接')
 
 
 if __name__ == '__main__':
